@@ -46,7 +46,11 @@ def lambda_handler(event, _context):
                 awaiting_confirmation=result["awaiting_confirmation"],
             )
 
-    src = s3().get_object(Bucket=config.DOCS_BUCKET, Key=sess["doc_key"])["Body"].read()
+    # An uploaded document sits in DocsBucket; a catalog form's master sits in
+    # ArtifactsBucket, because DocsBucket expires its entire contents after
+    # seven days and a catalog entry has to outlive that.
+    src_bucket = sess.get("doc_bucket") or config.DOCS_BUCKET
+    src = s3().get_object(Bucket=src_bucket, Key=sess["doc_key"])["Body"].read()
     doc_type = sess.get("doc_type")
     flatten = bool(body.get("flatten", False))
 

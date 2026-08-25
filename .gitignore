@@ -1,0 +1,10 @@
+# Python bytecode. Committed by accident early on; SAM packages CodeUri "."
+# for every function, so stale .pyc files were shipping to Lambda too.
+__pycache__/
+*.py[cod]
+
+# SAM build output
+.aws-sam/
+
+# CDK build output (also ignored in infra/.gitignore)
+cdk.out/

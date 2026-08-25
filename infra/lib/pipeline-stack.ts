@@ -34,9 +34,14 @@ export class PipelineStack extends cdk.Stack {
     const deployStage = new SiteStage(this, 'Deploy', { env: props?.env });
 
     // Deploys the SAM backend in lambdas/ alongside the CDK-managed site stack.
-    // Runs `sam build --use-container` because the layer/functions target
-    // arm64 (Globals.Function.Architectures in lambdas/template.yaml) and the
-    // CodeBuild host is x86_64 — container build cross-compiles correctly.
+    //
+    // `--use-container` builds inside SAM's Amazon Linux image so the layer's
+    // binary wheels (pypdfium2, reportlab, pillow) match the Lambda runtime
+    // rather than this Ubuntu host's glibc. It is NOT here to cross-compile:
+    // lambdas/template.yaml pins Architectures to x86_64 precisely because
+    // this host is x86_64 with no QEMU, so an arm64 container build fails
+    // with "exec format error". Keep the two in step — if the template ever
+    // moves to arm64, this step needs emulation set up first.
     const deployBackend = new pipelines.CodeBuildStep('DeployBackend', {
       input: source,
       env: {

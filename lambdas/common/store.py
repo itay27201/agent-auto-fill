@@ -133,9 +133,21 @@ def registry_lookup(doc_hash: str) -> dict | None:
     return _clean(r["Item"]) if "Item" in r else None
 
 
-def registry_store(doc_hash: str, schema_key: str, doc_type: str, form_name: str = "") -> None:
+def registry_store(
+    doc_hash: str,
+    schema_key: str,
+    doc_type: str,
+    form_name: str = "",
+    catalog_id: str = "",
+    guide_key: str = "",
+) -> None:
     """Government forms repeat. The second user to upload the same form gets
-    the schema instantly and never pays for the vision pass."""
+    the schema instantly and never pays for the vision pass.
+
+    `catalog_id`/`guide_key` are set when the form was published to the
+    catalog. They turn a hash match into a full match: the uploader gets the
+    reviewed guidance too, not just the field geometry.
+    """
     ddb().put_item(
         Item={
             "PK": f"FORM#{doc_hash}",
@@ -143,6 +155,8 @@ def registry_store(doc_hash: str, schema_key: str, doc_type: str, form_name: str
             "schema_key": schema_key,
             "doc_type": doc_type,
             "form_name": form_name,
+            "catalog_id": catalog_id,
+            "guide_key": guide_key,
             "created_at": _now(),
             # No TTL: the registry is the asset that makes this cheap over time.
         }

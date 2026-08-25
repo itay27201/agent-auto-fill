@@ -5,7 +5,7 @@ frontend polls it. Once `status` is "ready" it also carries the full field
 schema, current values, and presigned view URLs for the rasterized pages
 (ArtifactsBucket is fully private, so the frontend can't read them directly).
 """
-from common import config, schema as sch
+from common import catalog as cat, config, schema as sch
 from common.api import ApiError, caller, handler, path_param
 from common.aws import s3
 from common.store import get_session, get_values, load_schema
@@ -32,6 +32,10 @@ def lambda_handler(event, _context):
         "fields": sch.schema_to_list(fields),
         "values": values,
         "page_urls": page_urls,
+        # Sessions started from the catalog — and uploads that hash-matched a
+        # published form — carry official guidance. Sent with the schema so
+        # the guide panel costs no extra round trip.
+        "guide": cat.load_guide(sess.get("guide_key")),
     }
 
 

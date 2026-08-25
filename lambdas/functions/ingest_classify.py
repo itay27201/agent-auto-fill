@@ -54,7 +54,12 @@ def lambda_handler(event, _context):
 
     cached = registry_lookup(doc_hash)
     if cached:
-        update_session(sid, doc_type=doc_type, progress="ready")
+        # A registry entry that came from a published catalog form carries its
+        # catalog_id. Attaching the guide here means someone who uploads their
+        # own copy of a known form gets the official guidance for free,
+        # without going through the picker.
+        linked = {k: cached[k] for k in ("catalog_id", "guide_key") if cached.get(k)}
+        update_session(sid, doc_type=doc_type, doc_hash=doc_hash, progress="ready", **linked)
         return {
             **event,
             "doc_type": doc_type,
@@ -67,7 +72,8 @@ def lambda_handler(event, _context):
             "fields": load_schema(cached["schema_key"]),
         }
 
-    update_session(sid, doc_type=doc_type, page_count=page_count, progress="extracting")
+    update_session(sid, doc_type=doc_type, doc_hash=doc_hash, page_count=page_count,
+                   progress="extracting")
     return {**event, "doc_type": doc_type, "doc_hash": doc_hash, "cache_hit": False}
 
 

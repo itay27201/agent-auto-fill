@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Define a document</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Cpath d='M9 8h10l5 5v11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z' fill='none' stroke='white' stroke-width='2'/%3E%3Cpath d='M13 17l2 2 4-4' stroke='white' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./css/styles.css" />
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand-mark">FA</span>
+    <span class="title">Define a document</span>
+    <span class="progress" id="step-label">Step 1 of 3</span>
+    <a href="./index.html">Back to forms</a>
+  </div>
+
+  <main class="author-shell">
+    <!-- ------------------------------------------------- step 1: the form -->
+    <section class="author-step" id="step-form">
+      <div class="step-head">
+        <span class="step-num">1</span>
+        <div>
+          <h2>Upload the blank form</h2>
+          <p>The empty document the agency publishes. It gets read once, here, so nobody filling it in ever has to wait for that again.</p>
+        </div>
+      </div>
+
+      <div class="drop-zone" id="drop-zone">
+        <div class="drop-icon">
+          <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 18a4.5 4.5 0 0 1-1.1-8.86 5.5 5.5 0 0 1 10.79-1.87A4.5 4.5 0 0 1 16.5 18" />
+            <path d="M12 21v-9" />
+            <path d="M9 15l3-3 3 3" />
+          </svg>
+        </div>
+        <p class="drop-title">Drop the blank PDF or DOCX here</p>
+        <p class="drop-sub">or <span class="link-emphasis">click to choose a file</span></p>
+      </div>
+      <input type="file" id="file-input" accept=".pdf,.docx" class="hidden" />
+      <p class="status-line" id="status-line"></p>
+    </section>
+
+    <!-- ----------------------------------------------- step 2: describe it -->
+    <section class="author-step hidden" id="step-meta">
+      <div class="step-head">
+        <span class="step-num">2</span>
+        <div>
+          <h2>Name it</h2>
+          <p>This is what people see in the list.</p>
+        </div>
+      </div>
+
+      <div class="field-form">
+        <label>Form name
+          <input type="text" id="meta-name" dir="auto" placeholder="e.g. Form 106 — annual income statement" />
+        </label>
+        <label>Agency
+          <input type="text" id="meta-agency" dir="auto" placeholder="e.g. Tax Authority" />
+        </label>
+        <label>What it is for
+          <textarea id="meta-description" dir="auto" rows="2" placeholder="One line, in plain language."></textarea>
+        </label>
+        <label>Language
+          <input type="text" id="meta-language" dir="auto" placeholder="e.g. he, en" />
+        </label>
+        <button type="button" class="primary" id="create-entry">Create the entry</button>
+      </div>
+      <p class="status-line" id="meta-status"></p>
+    </section>
+
+    <!-- ------------------------------------------ step 3: write the guide -->
+    <section class="author-step hidden" id="step-guide">
+      <div class="step-head">
+        <span class="step-num">3</span>
+        <div>
+          <h2>Write the guide</h2>
+          <p>The form says what the boxes are. The guide says who may file it, what to attach, and when it is due — the things a person actually gets wrong. The assistant drafts it from what you give it; you decide what gets published.</p>
+        </div>
+      </div>
+
+      <div class="author-sources">
+        <div class="sources-head">
+          <strong>Reference documents</strong>
+          <span class="hint-inline">Instruction booklets, appendices, agency notices. The assistant reads these — it is not allowed to write anything it cannot trace back to one of them or to you.</span>
+        </div>
+        <div class="source-list" id="source-list"></div>
+        <button type="button" id="add-source">Add a reference document</button>
+        <input type="file" id="source-input" accept=".pdf,.txt,.md" class="hidden" />
+        <p class="status-line" id="source-status"></p>
+      </div>
+
+      <div class="author-workbench">
+        <div class="author-chat">
+          <div class="chat-log" id="chat-log"></div>
+          <div class="chat-input">
+            <textarea id="chat-input" dir="auto" placeholder="Tell the assistant about this form, or ask it to read a booklet and draft a section..."></textarea>
+            <button type="button" class="primary" id="chat-send" title="Send" aria-label="Send"></button>
+          </div>
+        </div>
+
+        <div class="author-guide">
+          <div class="guide-toolbar">
+            <strong>The guide</strong>
+            <span class="chip" id="guide-progress"></span>
+            <button type="button" class="small ghost" id="toggle-edit">Edit as text</button>
+          </div>
+          <div class="guide-render" id="guide-render" dir="auto"></div>
+          <textarea class="guide-source hidden" id="guide-source" dir="auto" spellcheck="false"></textarea>
+          <div class="guide-actions">
+            <button type="button" class="small hidden" id="save-source">Save changes</button>
+            <span class="publish-note" id="publish-note">Read it through before publishing — once published, people fill forms using it.</span>
+            <button type="button" class="primary" id="publish">Publish to the catalog</button>
+          </div>
+          <p class="status-line" id="publish-status"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./js/author.js"></script>
+</body>
+</html>

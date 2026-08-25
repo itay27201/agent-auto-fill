@@ -49,6 +49,38 @@ export function createApi(apiUrl) {
         body: JSON.stringify({ strict, flatten }),
       });
     },
+
+    // ------------------------------------------------------------- catalog
+    // The closed list of forms. Picking one skips upload and ingest entirely.
+
+    listCatalog({ includeDrafts = false } = {}) {
+      return request(apiUrl, `/catalog${includeDrafts ? "?include_drafts=1" : ""}`);
+    },
+    getCatalogEntry(cid, { includeFields = false } = {}) {
+      const q = includeFields ? "?include_fields=1" : "";
+      return request(apiUrl, `/catalog/${encodeURIComponent(cid)}${q}`);
+    },
+    createCatalogEntry(sessionId, meta) {
+      return request(apiUrl, "/catalog", {
+        method: "POST",
+        body: JSON.stringify({ session_id: sessionId, ...meta }),
+      });
+    },
+    updateCatalogEntry(cid, changes) {
+      return request(apiUrl, `/catalog/${encodeURIComponent(cid)}`, {
+        method: "PATCH",
+        body: JSON.stringify(changes),
+      });
+    },
+    catalogSourceUrl(cid, filename, contentType) {
+      return request(apiUrl, `/catalog/${encodeURIComponent(cid)}/sources`, {
+        method: "POST",
+        body: JSON.stringify({ filename, content_type: contentType }),
+      });
+    },
+    startFromCatalog(cid) {
+      return request(apiUrl, `/catalog/${encodeURIComponent(cid)}/sessions`, { method: "POST" });
+    },
   };
 }
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import guide as gd
 from . import schema as sch
 from . import store
 
@@ -135,6 +136,24 @@ TOOL_SPECS = [
     },
     {
         "toolSpec": {
+            "name": "read_guide",
+            "description": (
+                "Read a section of the official guidance a person wrote for this "
+                "form. Sections: " + ", ".join(gd.SECTIONS) + ". The overview, key "
+                "rules and required attachments are already in front of you — use "
+                "this for the others, especially before telling someone whether "
+                "they qualify, what happens if they get it wrong, or where the "
+                "form goes. This guidance outranks your own knowledge of the form."
+            ),
+            "inputSchema": {"json": {
+                "type": "object",
+                "properties": {"section": {"type": "string", "enum": list(gd.SECTIONS)}},
+                "required": ["section"],
+            }},
+        }
+    },
+    {
+        "toolSpec": {
             "name": "highlight_field",
             "description": (
                 "Scroll the user's document view to a field and outline it. Use this "
@@ -152,16 +171,27 @@ TOOL_SPECS = [
 TOOL_CONFIG = {"tools": TOOL_SPECS}
 
 
+def config_for(guide: dict | None) -> dict:
+    """Most forms have no guide. Offering `read_guide` anyway teaches the model
+    to call a tool that can only answer "there is no guide" — so it is dropped
+    from the spec entirely rather than left to fail at runtime."""
+    if guide:
+        return TOOL_CONFIG
+    return {"tools": [t for t in TOOL_SPECS if t["toolSpec"]["name"] != "read_guide"]}
+
+
 class ToolContext:
     """Per-turn state handed to the dispatcher."""
 
-    def __init__(self, sid: str, fields: list[sch.FormField], actor: str, emit=None, scope: list[str] | None = None):
+    def __init__(self, sid: str, fields: list[sch.FormField], actor: str, emit=None,
+                 scope: list[str] | None = None, guide: dict | None = None):
         self.sid = sid
         self.fields = fields
         self.by_id = {f.field_id: f for f in fields}
         self.actor = actor
         self.emit = emit or (lambda *_a, **_k: None)
         self.scope = scope  # field_ids the user selected in the viewer, if any
+        self.guide = guide  # official guidance, if this form is in the catalog
 
 
 def run_tool(name: str, args: dict, ctx: ToolContext) -> dict:
@@ -249,16 +279,41 @@ def _t_explain_field(args: dict, ctx: ToolContext) -> dict:
     f = ctx.by_id.get(args["field_id"])
     if not f:
         return {"error": "no such field_id"}
-    return {
+
+    # Two sources, kept apart on purpose. `help` came from a model reading the
+    # page image during ingest; the guide note was written by a person who
+    # knows the form. When they disagree the agent should trust the person, so
+    # it has to be able to see which is which.
+    note = ((ctx.guide or {}).get("field_notes") or {}).get(f.field_id)
+    out = {
         "field_id": f.field_id,
         "label": f.label,
         "type": f.type,
         "section": f.section,
         "required": f.required,
         "options": f.options,
-        "guidance": f.help or "No official guidance was captured for this field.",
+        "guidance": f.help or "No guidance was captured from the document itself.",
         "expected_format": f.validation or None,
     }
+    if note:
+        out["official_note"] = note
+        out["note_source"] = "Written by a person for this form. Prefer it over `guidance`."
+    return out
+
+
+def _t_read_guide(args: dict, ctx: ToolContext) -> dict:
+    if not ctx.guide:
+        return {"error": "this form has no official guide"}
+    name = args.get("section") or ""
+    sections = ctx.guide.get("sections") or {}
+    if name not in sections:
+        return {"error": f"no such section; available: {', '.join(gd.SECTIONS)}"}
+    body = (sections.get(name) or "").strip()
+    if not body:
+        return {"section": name, "empty": True,
+                "note": "This section was left blank. Do not fill the gap yourself — "
+                        "tell the person the guide does not cover it."}
+    return {"section": name, "content": body}
 
 
 def _t_highlight_field(args: dict, ctx: ToolContext) -> dict:
@@ -277,5 +332,6 @@ _DISPATCH = {
     "clear_field": _t_clear_field,
     "validate": _t_validate,
     "explain_field": _t_explain_field,
+    "read_guide": _t_read_guide,
     "highlight_field": _t_highlight_field,
 }

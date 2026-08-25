@@ -25,11 +25,15 @@
 
     <div class="side">
       <div class="side-header">
-        <h2>Form fields</h2>
+        <div class="side-tabs" role="tablist">
+          <button type="button" class="side-tab active" role="tab" data-side-tab="fields">Form fields</button>
+          <button type="button" class="side-tab hidden" role="tab" data-side-tab="guide">Guide</button>
+        </div>
         <p>Fill directly, or select fields to discuss with the assistant.</p>
       </div>
 
-      <div class="fields-panel" id="fields-panel"></div>
+      <div class="fields-panel" id="fields-panel" data-side-panel="fields"></div>
+      <div class="guide-panel hidden" id="guide-panel" data-side-panel="guide"></div>
 
       <div class="validate-bar" id="render-panel">
         <span class="summary"></span>

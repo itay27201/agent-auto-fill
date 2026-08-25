@@ -9,6 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common import guide as gd
 from common import schema as sch
 from common import tools
 
@@ -98,6 +99,45 @@ def test_validate_flags_unconfirmed_until_confirmed():
         result = tools.run_tool("validate", {}, ctx)
     assert result["awaiting_confirmation"] == []
     assert result["ok"] is True
+
+
+def test_explain_field_keeps_the_human_note_separate_from_the_model_help():
+    """`help` came from a model reading a page image; `official_note` came from
+    a person who knows the form. Merging them into one string would leave the
+    agent unable to tell which to trust when they disagree."""
+    store, emitted = FakeStore(), []
+    fields = [_field(help="model guessed this from the image")]
+    guide = gd.parse("## Field notes\n\n### f1\n\nNine digits, including the check digit.\n")
+    ctx = tools.ToolContext(sid="s1", fields=fields, actor="t", guide=guide)
+
+    out = tools.run_tool("explain_field", {"field_id": "f1"}, ctx)
+    assert out["guidance"] == "model guessed this from the image"
+    assert out["official_note"] == "Nine digits, including the check digit."
+    assert "Prefer it" in out["note_source"]
+
+    # No guide -> no note, and nothing invented in its place.
+    plain = tools.ToolContext(sid="s1", fields=fields, actor="t")
+    assert "official_note" not in tools.run_tool("explain_field", {"field_id": "f1"}, plain)
+
+
+def test_read_guide_returns_a_section_and_refuses_to_paper_over_a_blank_one():
+    guide = gd.parse("## Where to submit\n\nAt the tax office.\n")
+    ctx = tools.ToolContext(sid="s1", fields=[_field()], actor="t", guide=guide)
+
+    assert tools.run_tool("read_guide", {"section": "Where to submit"}, ctx)["content"] \
+        == "At the tax office."
+
+    blank = tools.run_tool("read_guide", {"section": "Eligibility"}, ctx)
+    assert blank["empty"] is True
+    assert "Do not fill the gap yourself" in blank["note"]
+
+    assert "error" in tools.run_tool("read_guide", {"section": "Nonsense"}, ctx)
+
+
+def test_read_guide_is_not_offered_when_the_form_has_no_guide():
+    names = lambda cfg: {t["toolSpec"]["name"] for t in cfg["tools"]}
+    assert "read_guide" not in names(tools.config_for(None))
+    assert "read_guide" in names(tools.config_for(gd.parse("## Overview\n\nx\n")))
 
 
 def run_all():

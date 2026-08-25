@@ -17,7 +17,7 @@
     <span class="grid-overlay"></span>
   </div>
 
-  <main class="upload-shell">
+  <main class="home-shell">
     <div class="brand-badge">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -27,67 +27,103 @@
     </div>
 
     <h1>Fill a document with help from an assistant</h1>
-    <p class="hint">Upload a PDF or Word form. Type into it directly, or ask the assistant to fill parts of it for you — every value it writes stays a draft until you confirm it.</p>
+    <p class="hint">Pick a form from the list, or upload your own. Type into it directly, or ask the assistant to fill parts of it for you — every value it writes stays a draft until you confirm it.</p>
 
-    <div class="drop-zone" id="drop-zone">
-      <div class="drop-icon">
-        <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M7 18a4.5 4.5 0 0 1-1.1-8.86 5.5 5.5 0 0 1 10.79-1.87A4.5 4.5 0 0 1 16.5 18" />
-          <path d="M12 21v-9" />
-          <path d="M9 15l3-3 3 3" />
+    <div class="tab-strip" role="tablist">
+      <button type="button" class="tab" role="tab" data-tab="catalog" aria-selected="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 6h16M4 12h16M4 18h10" />
         </svg>
-      </div>
-      <p class="drop-title">Drop a PDF or DOCX here</p>
-      <p class="drop-sub">or <span class="link-emphasis">click to choose a file</span></p>
-      <div class="format-badges">
-        <span class="badge">PDF</span>
-        <span class="badge">DOCX</span>
-      </div>
+        Choose a form
+      </button>
+      <button type="button" class="tab" role="tab" data-tab="upload" aria-selected="false">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 20V9" />
+          <path d="M8 12l4-3 4 3" />
+          <path d="M5 4h14" />
+        </svg>
+        Upload your own
+      </button>
     </div>
-    <input type="file" id="file-input" accept=".pdf,.docx" class="hidden" />
 
-    <p class="status-line" id="status-line"></p>
+    <!-- ------------------------------------------------------ catalog tab -->
+    <section class="tab-panel" data-panel="catalog" id="catalog-tab">
+      <div class="catalog-toolbar">
+        <input type="search" data-role="search" placeholder="Search by form name or agency" dir="auto" aria-label="Search forms" />
+        <a class="button-link" href="./catalog.html">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Define a document
+        </a>
+      </div>
+      <p class="status-line" data-role="status"></p>
+      <div class="form-grid" data-role="grid"></div>
+      <p class="fine-print">Forms in this list are already understood by the assistant — no upload, no waiting.</p>
+    </section>
 
-    <div class="feature-strip">
-      <div class="feature">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
+    <!-- ------------------------------------------------------- upload tab -->
+    <section class="tab-panel hidden" data-panel="upload">
+      <div class="drop-zone" id="drop-zone">
+        <div class="drop-icon">
+          <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 18a4.5 4.5 0 0 1-1.1-8.86 5.5 5.5 0 0 1 10.79-1.87A4.5 4.5 0 0 1 16.5 18" />
+            <path d="M12 21v-9" />
+            <path d="M9 15l3-3 3 3" />
           </svg>
         </div>
-        <div>
-          <strong>Assistant-drafted</strong>
-          <span>Ask in plain language, it fills what it can</span>
+        <p class="drop-title">Drop a PDF or DOCX here</p>
+        <p class="drop-sub">or <span class="link-emphasis">click to choose a file</span></p>
+        <div class="format-badges">
+          <span class="badge">PDF</span>
+          <span class="badge">DOCX</span>
         </div>
       </div>
-      <div class="feature">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />
-            <path d="M9.5 12l1.8 1.8L15 10" />
-          </svg>
+      <input type="file" id="file-input" accept=".pdf,.docx" class="hidden" />
+
+      <p class="status-line" id="status-line"></p>
+
+      <div class="feature-strip">
+        <div class="feature">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
+            </svg>
+          </div>
+          <div>
+            <strong>Assistant-drafted</strong>
+            <span>Ask in plain language, it fills what it can</span>
+          </div>
         </div>
-        <div>
-          <strong>Always a draft first</strong>
-          <span>Nothing is final until you confirm it</span>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />
+              <path d="M9.5 12l1.8 1.8L15 10" />
+            </svg>
+          </div>
+          <div>
+            <strong>Always a draft first</strong>
+            <span>Nothing is final until you confirm it</span>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v12" />
+              <path d="M7 11l5 5 5-5" />
+              <path d="M5 21h14" />
+            </svg>
+          </div>
+          <div>
+            <strong>Export when ready</strong>
+            <span>Download the filled PDF or DOCX</span>
+          </div>
         </div>
       </div>
-      <div class="feature">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 3v12" />
-            <path d="M7 11l5 5 5-5" />
-            <path d="M5 21h14" />
-          </svg>
-        </div>
-        <div>
-          <strong>Export when ready</strong>
-          <span>Download the filled PDF or DOCX</span>
-        </div>
-      </div>
-    </div>
+    </section>
   </main>
 
-  <script type="module" src="./js/upload.js"></script>
+  <script type="module" src="./js/home.js"></script>
 </body>
 </html>

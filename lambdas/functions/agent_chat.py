@@ -1,4 +1,4 @@
-"""The agent turn: Bedrock Converse + tools, streamed back over a WebSocket.
+"""The filling agent: helps a person complete a document they are looking at.
 
 Why WebSocket and not a streaming function URL: Lambda response streaming
 is native to the Node.js managed runtime only. In Python it needs the Lambda
@@ -8,12 +8,17 @@ the user's viewer to a box while the model is still talking, which a
 request/response endpoint cannot do.
 
 Routes: $connect, $disconnect, and `message`.
+
+Not to be confused with `author_chat`, the other agent, which writes the
+guide for a form being *defined*. They share only the streaming loop in
+common/agent_loop.py; the tools and prompts are disjoint, so this one cannot
+edit a guide and that one cannot write a form value.
 """
 import json
 import logging
 
-from common import config, schema as sch, tools
-from common.aws import apigw_ws, bedrock
+from common import agent_loop as loop, catalog as cat, config, guide as gd, schema as sch, tools
+from common.aws import apigw_ws
 from common.store import (
     append_message,
     get_session,
@@ -48,7 +53,7 @@ def lambda_handler(event, _context):
 
     conn = ctx["connectionId"]
     endpoint = config.WS_ENDPOINT or f"https://{ctx['domainName']}/{ctx['stage']}"
-    send = _sender(endpoint, conn)
+    send = loop.sender(apigw_ws(endpoint), conn)
 
     try:
         body = json.loads(event.get("body") or "{}")
@@ -57,24 +62,6 @@ def lambda_handler(event, _context):
         log.exception("agent turn failed")
         send("error", {"message": f"{type(e).__name__}: {e}"})
     return {"statusCode": 200}
-
-
-def _sender(endpoint: str, conn: str):
-    client = apigw_ws(endpoint)
-
-    def send(kind: str, data):
-        try:
-            client.post_to_connection(
-                ConnectionId=conn,
-                Data=json.dumps({"type": kind, **(data if isinstance(data, dict) else {"data": data})},
-                                ensure_ascii=False).encode("utf-8"),
-            )
-        except client.exceptions.GoneException:
-            log.info("connection %s gone", conn)
-        except Exception:
-            log.exception("ws send failed")
-
-    return send
 
 
 def _turn(body: dict, send) -> None:
@@ -93,12 +80,23 @@ def _turn(body: dict, send) -> None:
     fields = sch.schema_from_list(load_schema(sess["schema_key"]))
     values = get_values(sid)
     actor = body.get("actor") or sess.get("owner", "anonymous")
+    # Present when the form came from the catalog, or when an upload
+    # hash-matched a published one. Most sessions have no guide.
+    guide = cat.load_guide(sess.get("guide_key"))
 
-    ctx = tools.ToolContext(sid=sid, fields=fields, actor=actor, emit=send, scope=scope)
+    ctx = tools.ToolContext(sid=sid, fields=fields, actor=actor, emit=send,
+                            scope=scope, guide=guide)
 
     system = [
         {"text": SYSTEM},
         {"text": _form_context(fields, values, scope)},
+    ]
+    block = gd.prompt_block(guide)
+    if block:
+        # Inside the cache point: the guide is byte-identical on every turn of
+        # a session, so after the first turn it costs almost nothing.
+        system.append({"text": block})
+    system += [
         # The schema block is identical across every turn in a session and
         # is the bulk of the prompt. Caching it makes the marginal turn
         # cost almost nothing.
@@ -112,85 +110,16 @@ def _turn(body: dict, send) -> None:
 
     send("turn_start", {"session_id": sid})
 
-    for _ in range(config.MAX_AGENT_TURNS):
-        reply, stop = _stream_once(messages, system, send)
-        messages.append(reply)
-        append_message(sid, "assistant", reply["content"])
-
-        if stop != "tool_use":
-            break
-
-        results = []
-        for block in reply["content"]:
-            if "toolUse" not in block:
-                continue
-            tu = block["toolUse"]
-            send("tool_start", {"name": tu["name"]})
-            out = tools.run_tool(tu["name"], tu.get("input") or {}, ctx)
-            results.append({"toolResult": {
-                "toolUseId": tu["toolUseId"],
-                "content": [{"json": out}],
-                "status": "error" if isinstance(out, dict) and out.get("error") else "success",
-            }})
-
-        tool_msg = {"role": "user", "content": results}
-        messages.append(tool_msg)
-        append_message(sid, "user", results)
-    else:
-        send("warning", {"message": "stopped after the maximum number of tool steps"})
-
-    send("turn_end", {"summary": sch.validate_all(fields, get_values(sid))})
-
-
-def _stream_once(messages, system, send) -> tuple[dict, str]:
-    """One Converse stream. Returns the assembled assistant message and the
-    stop reason."""
-    resp = bedrock().converse_stream(
-        modelId=config.BEDROCK_MODEL_ID,
-        system=system,
-        messages=messages,
-        toolConfig=tools.TOOL_CONFIG,
-        inferenceConfig={"maxTokens": config.MAX_TOKENS, "temperature": 0.2},
+    loop.run_turn(
+        messages,
+        system,
+        tools.config_for(guide),
+        dispatch=lambda name, args: tools.run_tool(name, args, ctx),
+        send=send,
+        persist=lambda role, content: append_message(sid, role, content),
     )
 
-    content, stop = [], "end_turn"
-    current, tool_json = None, ""
-
-    for ev in resp["stream"]:
-        if "contentBlockStart" in ev:
-            start = ev["contentBlockStart"]["start"]
-            if "toolUse" in start:
-                current = {"toolUse": {**start["toolUse"], "input": {}}}
-                tool_json = ""
-
-        elif "contentBlockDelta" in ev:
-            delta = ev["contentBlockDelta"]["delta"]
-            if "text" in delta:
-                if current is None:
-                    current = {"text": ""}
-                current["text"] = current.get("text", "") + delta["text"]
-                send("text", {"delta": delta["text"]})
-            elif "toolUse" in delta:
-                tool_json += delta["toolUse"].get("input", "")
-
-        elif "contentBlockStop" in ev:
-            if current and "toolUse" in current:
-                try:
-                    current["toolUse"]["input"] = json.loads(tool_json) if tool_json else {}
-                except json.JSONDecodeError:
-                    current["toolUse"]["input"] = {}
-            if current:
-                content.append(current)
-            current, tool_json = None, ""
-
-        elif "messageStop" in ev:
-            stop = ev["messageStop"].get("stopReason", "end_turn")
-
-        elif "metadata" in ev:
-            usage = ev["metadata"].get("usage", {})
-            log.info("usage: %s", json.dumps(usage))
-
-    return {"role": "assistant", "content": content or [{"text": ""}]}, stop
+    send("turn_end", {"summary": sch.validate_all(fields, get_values(sid))})
 
 
 def _form_context(fields, values, scope) -> str:

@@ -1,7 +1,7 @@
 # Form-filling agent — backend
 
-Twelve Lambdas behind a REST API, a WebSocket agent, and a Step Functions
-ingest pipeline. Agent runs on Bedrock Sonnet 4.6.
+Nineteen Lambdas behind a REST API, two WebSocket agents, and a Step Functions
+ingest pipeline. Both agents run on Bedrock Sonnet 4.6.
 
 ## Layout
 
@@ -12,22 +12,49 @@ common/            shared across every function
   api.py           REST plumbing, CORS, error wrapping
   schema.py        FormField model + validation      <- the contract
   store.py         DynamoDB single-table access
-  tools.py         Bedrock toolConfig + dispatcher
+  catalog.py       the closed list of forms
+  guide.py         the markdown guide: parse/render/slice
+  agent_loop.py    Converse streaming loop, shared by both agents
+  tools.py         filling agent's toolConfig + dispatcher
+  author_tools.py  authoring agent's toolConfig + dispatcher
 functions/
   api_create_session.py   POST   /sessions
   api_get_session.py      GET    /sessions/{id}
   api_set_fields.py       PATCH  /sessions/{id}/fields
   api_validate.py         POST   /sessions/{id}/validate
   api_render.py           POST   /sessions/{id}/render
+  api_catalog_list.py     GET    /catalog
+  api_catalog_get.py      GET    /catalog/{cid}
+  api_catalog_create.py   POST   /catalog              promote a session
+  api_catalog_update.py   PATCH  /catalog/{cid}        edit + publish
+  api_catalog_source.py   POST   /catalog/{cid}/sources
+  api_catalog_session.py  POST   /catalog/{cid}/sessions   <- the fast path
   ingest_classify.py      S3 trigger + step 1
   ingest_extract.py       step 2
   ingest_enrich.py        step 3 (the only Bedrock call in ingest)
   ingest_finalize.py      step 4 + failure handler
-  agent_chat.py           WebSocket agent loop
+  agent_chat.py           WebSocket `message` — the filling agent
+  author_chat.py          WebSocket `author`  — the authoring agent
 statemachine/ingest.asl.json
 template.yaml
 tests/                    run without AWS
 ```
+
+## Two agents
+
+They share the streaming loop and nothing else.
+
+| | `agent_chat` | `author_chat` |
+|---|---|---|
+| Helps someone | fill a document | define one |
+| WS route | `message` | `author` |
+| Writes | form values in DynamoDB | `catalog/<cid>/guide.md` in S3 |
+| Tools | `set_field`, `validate`, `highlight_field`, … | `read_source`, `write_section`, `write_field_note` |
+| Trust rule | every value needs a `source` + `evidence` | every sentence needs a `basis` + `citation` |
+
+The toolConfig is chosen per turn, so neither can call the other's tools: the
+authoring agent has no way to write a form value, and the filling agent has no
+way to edit a guide. `read_guide` is the one name in both, read-only in each.
 
 ## The model id
 
@@ -61,20 +88,43 @@ Sonnet 4.6 → Request access).
 
 ## Flow
 
+There are two ways in, and they meet at the same session.
+
+**Picking a catalog form — no ingest at all**
+
+1. `GET /catalog` → the published list.
+2. `POST /catalog/{cid}/sessions` → copies the schema, seeds the fields,
+   returns a session that is already `ready`. No upload, no state machine,
+   no model call; a couple of hundred milliseconds.
+3. Straight to step 4 below.
+
+**Uploading your own**
+
 1. `POST /sessions` → session id + presigned PUT URL. The browser uploads
    straight to S3; the document never passes through Lambda, which would cap
    it at 6MB.
 2. S3 `ObjectCreated` → `on_upload` → state machine.
 3. Classify → extract → enrich → finalize. Poll `GET /sessions/{id}` until
-   `status` is `ready`.
+   `status` is `ready`. If the document's SHA-256 matches a published catalog
+   form, classify short-circuits and the session picks up that form's guide.
+
+**Both, from here**
+
 4. Frontend draws field boxes from `schema[].bbox` (normalized 0–1,
    top-left origin, so overlay works at any zoom).
 5. User types → `PATCH .../fields`. User chats → WebSocket `message`.
 6. `POST .../render` → presigned download.
 
+**Defining a form** reuses the upload flow rather than adding a second
+pipeline: upload the blank form, `POST /catalog` to promote the finished
+session into a draft, write the guide over the `author` WebSocket route, then
+`PATCH /catalog/{cid}` with `status: published`.
+
 ### WebSocket protocol
 
-Send:
+One API, two routes. `RouteSelectionExpression` is `$request.body.action`.
+
+**Filling** — `action: "message"` → `agent_chat`:
 ```json
 {"action": "message", "session_id": "...", "message": "...",
  "scope_field_ids": ["national_id", "family_name"]}
@@ -85,6 +135,21 @@ prompt to one section and constrains where the agent may write.
 
 Receive: `turn_start`, `text` (token deltas), `tool_start`, `field_updated`,
 `highlight`, `turn_end`, `error`.
+
+**Authoring** — `action: "author"` → `author_chat`:
+```json
+{"action": "author", "catalog_id": "form-106", "message": "...",
+ "history": [{"role": "user", "text": "..."}]}
+```
+
+The transcript is client-side: defining a document is one sitting, not a
+resumable session, and the durable artifact is `guide.md`, flushed to S3 after
+every write. Only plain text turns from `history` are accepted — echoing
+client-supplied tool blocks back into the prompt would let the page fabricate
+tool results.
+
+Receive: `turn_start`, `text`, `tool_start`, `guide_updated` (the whole
+markdown, so the page re-renders live), `turn_end`, `error`.
 
 ## Design decisions worth knowing
 
@@ -108,6 +173,29 @@ values the user just typed in manually.
 SHA-256. The second upload of the same form skips the vision pass entirely.
 Registry entries have no TTL; session data does.
 
+**The catalog is that registry made visible.** A government issues a fixed
+list of forms, so the interesting case is not "an arbitrary document" but "the
+twenty documents everyone files". A catalog entry is keyed by a stable slug
+(`form-106`), not by the hash — an agency reissuing the same form with a new
+revision date changes the bytes and would have orphaned a hash-keyed entry.
+The hash stays on the entry as a secondary pointer so uploads still match.
+
+**Catalog artifacts live under `catalog/` in ArtifactsBucket.** Not
+DocsBucket, whose purge rule has no prefix filter and expires the whole bucket
+after seven days. A catalog session's `doc_bucket` records which bucket its
+master is in, which is why `api_render` reads
+`sess.get("doc_bucket") or DOCS_BUCKET`.
+
+**The guide is markdown, not JSON.** `schema.json` is a machine contract the
+viewer and renderer depend on and stays JSON. The guide holds what a PDF
+cannot contain — eligibility, attachments, deadlines, why a form gets
+rejected — and an official whose job is knowing that form has to be able to
+open it, fix a wrong deadline, and save.
+
+**The authoring agent drafts; a person publishes.** Same rule `set_field`
+enforces for values. `PATCH /catalog/{cid}` is the only path to `published`,
+no tool can reach it, and publishing an empty guide is refused.
+
 **Prompt caching on the schema block.** The field list is identical across
 every turn in a session and is most of the prompt.
 
@@ -123,16 +211,22 @@ timeout on any multi-tool turn.
 ## Tests
 
 ```bash
-python3 tests/test_roundtrip.py   # build a fillable PDF, extract, fill, verify
-python3 tests/test_tools.py       # tool dispatcher + source enforcement
+python3 tests/test_roundtrip.py     # build a fillable PDF, extract, fill, verify
+python3 tests/test_tools.py         # filling tools: source + evidence enforcement
+python3 tests/test_author_tools.py  # authoring tools: basis + citation enforcement
+python3 tests/test_guide.py         # guide parse/render round-trip, prompt budget
 ```
 
-Both run without AWS credentials.
+All four run without AWS credentials.
 
 ## Not done yet
 
 - **Auth.** The Cognito authorizer is commented out in `template.yaml`.
-  Do not point this at real documents until it is on.
+  Do not point this at real documents until it is on. This matters more now
+  than it did: with `caller()` returning `"anonymous"` for everyone, **any
+  user can edit or publish any catalog entry**, including one somebody else
+  reviewed. The entry carries `created_by` and a `status` so an
+  author-or-admin check is a policy change rather than a migration.
 - **DOCX → PDF** needs LibreOffice, which is ~400MB — past the 250MB layer
   limit. `ExtractFn` has to become a container image function.
 - **Textract** is not wired in. `ingest_enrich` does field detection with

@@ -6,6 +6,7 @@ import { initViewer } from "./viewer.js";
 import { initFieldsPanel } from "./fields-panel.js";
 import { initChat, wsHandlers } from "./chat.js";
 import { initRender } from "./render.js";
+import { initGuidePanel } from "./guide-panel.js";
 
 const POLL_START_MS = 1500;
 const POLL_MAX_MS = 5000;
@@ -68,6 +69,13 @@ function startApp(api, cfg, session) {
   initViewer(document.getElementById("viewer-pane"));
   initFieldsPanel(document.getElementById("fields-panel"), api, onNeedsRefetch);
   initRender(document.getElementById("render-panel"), api);
+  // Only appears when this form has a guide — i.e. it came from the catalog,
+  // or the upload hash-matched a form somebody already documented.
+  initGuidePanel(
+    document.getElementById("guide-panel"),
+    document.querySelector('[data-side-tab="guide"]')
+  );
+  initSideTabs();
 
   const ws = createWsClient(cfg.wsUrl, wsHandlers());
   initChat(
@@ -93,6 +101,19 @@ function startApp(api, cfg, session) {
     } finally {
       refetching = false;
     }
+  }
+}
+
+function initSideTabs() {
+  const tabs = Array.from(document.querySelectorAll("[data-side-tab]"));
+  const panels = new Map(
+    Array.from(document.querySelectorAll("[data-side-panel]")).map((el) => [el.dataset.sidePanel, el])
+  );
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      for (const t of tabs) t.classList.toggle("active", t === tab);
+      for (const [key, panel] of panels) panel.classList.toggle("hidden", key !== tab.dataset.sideTab);
+    });
   }
 }
 

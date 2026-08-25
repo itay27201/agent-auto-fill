@@ -48,18 +48,25 @@ export function createWsClient(wsUrl, handlers) {
     backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
   }
 
-  function send(sessionId, message, scopeFieldIds) {
+  /** Raw frame. `action` selects which agent handles it — the API's
+   * RouteSelectionExpression is $request.body.action, so "message" reaches the
+   * filling agent and "author" reaches the guide-writing one. */
+  function sendRaw(payload) {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       handlers.onSendFailed?.("not connected yet — try again in a moment");
       return false;
     }
-    socket.send(JSON.stringify({
+    socket.send(JSON.stringify(payload));
+    return true;
+  }
+
+  function send(sessionId, message, scopeFieldIds) {
+    return sendRaw({
       action: "message",
       session_id: sessionId,
       message,
       scope_field_ids: scopeFieldIds && scopeFieldIds.length ? scopeFieldIds : undefined,
-    }));
-    return true;
+    });
   }
 
   function close() {
@@ -68,5 +75,5 @@ export function createWsClient(wsUrl, handlers) {
   }
 
   connect();
-  return { send, close };
+  return { send, sendRaw, close };
 }

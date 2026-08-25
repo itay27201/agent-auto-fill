@@ -1,0 +1,54 @@
+{
+  "Comment": "Document ingest: classify -> extract -> enrich -> finalize, with a shared failure handler.",
+  "StartAt": "Classify",
+  "States": {
+    "Classify": {
+      "Type": "Task",
+      "Resource": "${ClassifyArn}",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "IngestFailed" }
+      ],
+      "Next": "Extract"
+    },
+    "Extract": {
+      "Type": "Task",
+      "Resource": "${ExtractArn}",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "IngestFailed" }
+      ],
+      "Next": "Enrich"
+    },
+    "Enrich": {
+      "Type": "Task",
+      "Resource": "${EnrichArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["Bedrock.ThrottlingException", "Bedrock.ServiceQuotaExceededException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 5,
+          "BackoffRate": 2.0,
+          "MaxAttempts": 5
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "IngestFailed" }
+      ],
+      "Next": "Finalize"
+    },
+    "Finalize": {
+      "Type": "Task",
+      "Resource": "${FinalizeArn}",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "IngestFailed" }
+      ],
+      "Next": "IngestSucceeded"
+    },
+    "IngestSucceeded": {
+      "Type": "Succeed"
+    },
+    "IngestFailed": {
+      "Type": "Task",
+      "Resource": "${OnFailureArn}",
+      "End": true
+    }
+  }
+}

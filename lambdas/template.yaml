@@ -1,0 +1,420 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Document-filling agent — REST API, WebSocket agent, and ingest pipeline.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+  BedrockModelId:
+    Type: String
+    Default: eu.anthropic.claude-sonnet-4-6
+    Description: >-
+      Inference profile id, not the base model id. Sonnet 4.6 cannot be
+      invoked on demand as anthropic.claude-sonnet-4-6; it needs a geography
+      prefix (eu./us./apac./global.). Pick by data-residency requirement.
+  AllowedOrigin:
+    Type: String
+    Default: "*"
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]          # ~20% cheaper, all deps have aarch64 wheels
+    MemorySize: 1024
+    Timeout: 30
+    Tracing: Active
+    Layers: [!Ref DepsLayer]
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref Table
+        DOCS_BUCKET: !Ref DocsBucket
+        ARTIFACTS_BUCKET: !Ref ArtifactsBucket
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        BEDROCK_REGION: !Ref AWS::Region
+        ALLOWED_ORIGIN: !Ref AllowedOrigin
+        POWERTOOLS_LOG_LEVEL: INFO
+
+Resources:
+
+  # ----------------------------------------------------------------- storage
+  Key:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Form agent — documents contain dense PII
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action: "kms:*"
+            Resource: "*"
+
+  DocsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref Key
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: purge-uploads
+            Status: Enabled
+            ExpirationInDays: 7
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [PUT]
+            AllowedOrigins: [!Ref AllowedOrigin]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Function: !GetAtt OnUploadFn.Arn
+            Filter:
+              S3Key:
+                Rules: [{ Name: prefix, Value: uploads/ }]
+
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref Key
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          # Session artifacts expire; schemas under the registry prefix do not,
+          # because the registry is what makes repeat forms free.
+          - Id: purge-derived
+            Status: Enabled
+            Prefix: derived/
+            ExpirationInDays: 7
+          - Id: purge-outputs
+            Status: Enabled
+            Prefix: outputs/
+            ExpirationInDays: 7
+
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref Key
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  DepsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: layer/
+      CompatibleRuntimes: [python3.12]
+      CompatibleArchitectures: [arm64]
+    Metadata:
+      BuildMethod: python3.12
+
+  # --------------------------------------------------------------------- api
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Stage
+      TracingEnabled: true
+      Cors:
+        AllowOrigin: !Sub "'${AllowedOrigin}'"
+        AllowHeaders: "'content-type,authorization'"
+        AllowMethods: "'GET,POST,PATCH,OPTIONS'"
+      # Attach a Cognito authorizer before this handles real documents.
+      # Auth:
+      #   DefaultAuthorizer: CognitoAuth
+      #   Authorizers:
+      #     CognitoAuth:
+      #       UserPoolArn: !GetAtt UserPool.Arn
+
+  CreateSessionFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_create_session.lambda_handler
+      Environment: { Variables: { UPLOAD_URL_TTL: "900" } }
+      Policies:
+        - DynamoDBWritePolicy: { TableName: !Ref Table }
+        - S3WritePolicy: { BucketName: !Ref DocsBucket }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Post:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /sessions, Method: POST }
+
+  GetSessionFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_get_session.lambda_handler
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DocsBucket }
+        - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Get:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/sessions/{session_id}", Method: GET }
+
+  SetFieldsFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_set_fields.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Patch:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/sessions/{session_id}/fields", Method: PATCH }
+
+  ValidateFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_validate.lambda_handler
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Post:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/sessions/{session_id}/validate", Method: POST }
+
+  RenderFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_render.lambda_handler
+      MemorySize: 2048
+      Timeout: 120
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DocsBucket }
+        - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Post:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/sessions/{session_id}/render", Method: POST }
+
+  # ----------------------------------------------------------------- ingest
+  OnUploadFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/ingest_classify.on_upload
+      Environment: { Variables: { INGEST_STATE_MACHINE_ARN: !Ref IngestStateMachine } }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DocsBucket }
+        - StepFunctionsExecutionPolicy: { StateMachineName: !GetAtt IngestStateMachine.Name }
+
+  OnUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OnUploadFn
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  ClassifyFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/ingest_classify.lambda_handler
+      MemorySize: 1536
+      Timeout: 120
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DocsBucket }
+        - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+
+  ExtractFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/ingest_extract.lambda_handler
+      MemorySize: 3008          # rasterizing 20 pages is memory-bound
+      Timeout: 600
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DocsBucket }
+        - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+
+  EnrichFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/ingest_enrich.lambda_handler
+      MemorySize: 2048
+      Timeout: 900
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+              # Both ARNs are needed: the inference profile you call, and the
+              # foundation models it can route to across the geography.
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+                - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6"
+
+  FinalizeFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/ingest_finalize.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+
+  IngestFailedFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/ingest_finalize.on_failure
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+
+  IngestStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/ingest.asl.json
+      DefinitionSubstitutions:
+        ClassifyArn: !GetAtt ClassifyFn.Arn
+        ExtractArn: !GetAtt ExtractFn.Arn
+        EnrichArn: !GetAtt EnrichFn.Arn
+        FinalizeArn: !GetAtt FinalizeFn.Arn
+        OnFailureArn: !GetAtt IngestFailedFn.Arn
+      Policies:
+        - LambdaInvokePolicy: { FunctionName: !Ref ClassifyFn }
+        - LambdaInvokePolicy: { FunctionName: !Ref ExtractFn }
+        - LambdaInvokePolicy: { FunctionName: !Ref EnrichFn }
+        - LambdaInvokePolicy: { FunctionName: !Ref FinalizeFn }
+        - LambdaInvokePolicy: { FunctionName: !Ref IngestFailedFn }
+
+  # -------------------------------------------------------------- websocket
+  WsApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "form-agent-ws-${Stage}"
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  AgentChatFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/agent_chat.lambda_handler
+      MemorySize: 1024
+      Timeout: 300
+      Environment:
+        Variables:
+          WS_ENDPOINT: !Sub "https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+                - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6"
+            - Effect: Allow
+              Action: execute-api:ManageConnections
+              Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
+
+  AgentChatPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AgentChatFn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
+
+  WsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WsApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AgentChatFn.Arn}/invocations"
+
+  WsConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: $connect
+      Target: !Sub "integrations/${WsIntegration}"
+
+  WsDisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: $disconnect
+      Target: !Sub "integrations/${WsIntegration}"
+
+  WsMessageRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: message
+      Target: !Sub "integrations/${WsIntegration}"
+
+  WsStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WsApi
+      StageName: !Ref Stage
+      AutoDeploy: true
+
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+  WebSocketUrl:
+    Value: !Sub "wss://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+  DocsBucketName:
+    Value: !Ref DocsBucket
+  TableName:
+    Value: !Ref Table

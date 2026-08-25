@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>devtest</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <div class="topbar">
+      <span class="title" id="doc-title">Document</span>
+      <span class="progress" id="progress"></span>
+      <a href="./index.html">New document</a>
+    </div>
+    <div class="viewer-pane" id="viewer-pane"></div>
+    <div class="side">
+      <div class="fields-panel" id="fields-panel"></div>
+      <div class="validate-bar" id="render-panel">
+        <span class="summary"></span>
+        <label style="font-size: 12px; display: flex; align-items: center; gap: 4px;">
+          <input type="checkbox" data-role="flatten" /> flatten
+        </label>
+        <button type="button" data-action="validate">Check</button>
+        <button type="button" class="primary" data-action="render" disabled>Render</button>
+        <a class="hidden" data-role="download" download>Download</a>
+        <div class="awaiting-list"></div>
+      </div>
+      <div class="chat-pane">
+        <div class="chat-scope hidden" id="chat-scope"></div>
+        <div class="chat-log" id="chat-log"></div>
+        <div class="chat-input">
+          <textarea id="chat-input" placeholder="Ask the assistant about this form..." dir="auto"></textarea>
+          <button type="button" class="primary" id="chat-send">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { setSession, notify } from "./js/state.js";
+    import { initViewer } from "./js/viewer.js";
+    import { initFieldsPanel } from "./js/fields-panel.js";
+    import { initChat, wsHandlers } from "./js/chat.js";
+    import { initRender } from "./js/render.js";
+
+    const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAZAAAAJYCAYAAAC" +
+      "9uMFhAAAAAXNSR0IArs4c6QAAAAlwSFlzAAALEwAACxMBAJqcGAAAAA9JREFUeJztwQENAAAAwqD3T22" +
+      "gAKt6AwAB9wABAAF/AwAAAAAAAAAAAAAAAAAAAAAAAA" ; // 1x1-ish placeholder; layout only cares about aspect box
+
+    const fields = [
+      { field_id: "family_name", label: "Family name", type: "text", page: 1,
+        bbox: [0.30, 0.11, 0.72, 0.14], section: "Personal", required: true,
+        help: "As printed on your passport." },
+      { field_id: "national_id", label: "National ID number", type: "text", page: 1,
+        bbox: [0.30, 0.16, 0.60, 0.19], section: "Personal", required: true },
+      { field_id: "marital_status", label: "Marital status", type: "select", page: 1,
+        bbox: [0.30, 0.21, 0.55, 0.24], section: "Personal",
+        options: ["Single", "Married", "Divorced", "Widowed"] },
+      { field_id: "consent", label: "I consent to data processing", type: "checkbox", page: 1,
+        bbox: [0.50, 0.26, 0.53, 0.29], section: "Declarations", required: true },
+      { field_id: "notes", label: "Additional notes", type: "textarea", page: 1,
+        bbox: [0.10, 0.40, 0.90, 0.55], section: "Declarations" },
+    ];
+
+    const values = {
+      family_name: { value: "Cohen", source: "user", confirmed: true, version: 1 },
+      national_id: { value: "123456789", source: "agent", confirmed: false, version: 1 },
+      marital_status: { value: null, source: null, confirmed: false, version: 0 },
+      consent: { value: false, source: null, confirmed: false, version: 0 },
+      notes: { value: "", source: null, confirmed: false, version: 0 },
+    };
+
+    setSession({
+      session_id: "devtest",
+      status: "ready",
+      filename: "sample-form.pdf",
+      field_count: fields.length,
+      fields,
+      values,
+      page_urls: [PIXEL],
+    });
+
+    const api = {
+      setFields: async (_sid, updates) => ({
+        results: updates.map((u) => ({ field_id: u.field_id, ok: true })),
+      }),
+      validate: async () => ({
+        ok: false, filled: 2, total: fields.length,
+        errors: [], missing_required: [{ field_id: "consent", label: "I consent to data processing", error: "required" }],
+        awaiting_confirmation: [{ field_id: "national_id", label: "National ID number" }],
+      }),
+      render: async () => ({ download_url: "#", key: "x", flattened: false, summary: {} }),
+    };
+
+    initViewer(document.getElementById("viewer-pane"));
+    initFieldsPanel(document.getElementById("fields-panel"), api, () => {});
+    initRender(document.getElementById("render-panel"), api);
+
+    const fakeWs = { send: () => true, close: () => {} };
+    initChat(
+      {
+        log: document.getElementById("chat-log"),
+        scopeChip: document.getElementById("chat-scope"),
+        input: document.getElementById("chat-input"),
+        sendBtn: document.getElementById("chat-send"),
+      },
+      fakeWs
+    );
+    const handlers = wsHandlers();
+    handlers.turn_start();
+    handlers.text({ delta: "Hi! I can see you already filled in your family name. " });
+    handlers.text({ delta: "What's your marital status?" });
+    handlers.field_updated({ field_id: "national_id", value: "123456789", source: "agent", confirmed: false });
+    handlers.turn_end();
+
+    notify();
+    window.__devtestReady = true;
+  </script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fill a document</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+</head>
+<body>
+  <p id="session-error" class="status-line error hidden" style="margin: 24px;"></p>
+
+  <div class="app hidden" id="app">
+    <div class="topbar">
+      <span class="title" id="doc-title">Document</span>
+      <span class="progress" id="progress"></span>
+      <a href="./index.html">New document</a>
+    </div>
+
+    <div class="viewer-pane" id="viewer-pane"></div>
+
+    <div class="side">
+      <div class="fields-panel" id="fields-panel"></div>
+
+      <div class="validate-bar" id="render-panel">
+        <span class="summary"></span>
+        <label style="font-size: 12px; display: flex; align-items: center; gap: 4px;">
+          <input type="checkbox" data-role="flatten" /> flatten
+        </label>
+        <button type="button" data-action="validate">Check</button>
+        <button type="button" class="primary" data-action="render" disabled>Render</button>
+        <a class="hidden" data-role="download" download>Download</a>
+        <div class="awaiting-list"></div>
+      </div>
+
+      <div class="chat-pane">
+        <div class="chat-scope hidden" id="chat-scope"></div>
+        <div class="chat-log" id="chat-log"></div>
+        <div class="chat-input">
+          <textarea id="chat-input" placeholder="Ask the assistant about this form..." dir="auto"></textarea>
+          <button type="button" class="primary" id="chat-send">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./js/session.js"></script>
+</body>
+</html>

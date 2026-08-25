@@ -1,0 +1,12 @@
+# Pinned rather than left open: the Lambda Python 3.12 runtime bundles its
+# own boto3/botocore, and a version older than this may predate Bedrock
+# Converse `cachePoint` support that agent_chat.py and ingest_enrich.py rely
+# on. A layer-provided package on /opt takes precedence over the runtime's
+# own site-packages, so pinning here is what actually controls the version.
+boto3>=1.35
+pypdf>=4.0
+reportlab>=4.0
+python-docx>=1.1
+pypdfium2>=4.30
+Pillow>=10.0
+python-bidi>=0.4

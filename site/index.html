@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fill a document</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+</head>
+<body>
+  <div class="upload-shell">
+    <h1>Fill a document with help from an assistant</h1>
+    <p class="hint">Upload a PDF or Word form. You'll be able to type directly into it, or ask the assistant to fill parts of it for you — every value it writes stays a draft until you confirm it.</p>
+
+    <div class="drop-zone" id="drop-zone">
+      <p>Drop a PDF or DOCX here, or click to choose a file</p>
+    </div>
+    <input type="file" id="file-input" accept=".pdf,.docx" class="hidden" />
+
+    <p class="status-line" id="status-line"></p>
+  </div>
+
+  <script type="module" src="./js/upload.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import { loadConfig, isConfigured, promptForConfig } from "./config.js";
+import { waitForConfig, isConfigured, showUnavailableNotice } from "./config.js";
 import { createApi } from "./api.js";
 import { createWsClient } from "./ws-client.js";
 import { state, setSession, notify } from "./state.js";
@@ -23,9 +23,10 @@ if (!sid) {
 }
 
 async function boot() {
-  let cfg = await loadConfig();
+  const cfg = await waitForConfig();
   if (!isConfigured(cfg)) {
-    cfg = await promptForConfig(document.body);
+    showUnavailableNotice(document.body);
+    return;
   }
   const api = createApi(cfg.apiUrl);
 

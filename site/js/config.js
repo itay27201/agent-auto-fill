@@ -1,33 +1,30 @@
 // Backend URLs. `SiteStack` deploys the whole site/ directory verbatim (no
 // build step), so config.json is a plain static file shipped alongside the
-// HTML/JS rather than something injected at deploy time. See lambdas/README
-// and the SAM stack outputs (ApiUrl, WebSocketUrl) for the real values.
-//
-// Until config.json carries real values, callers fall back to whatever the
-// person pasted into the one-time setup prompt (cached in localStorage) so
-// the app is usable against a hand-deployed backend without waiting on the
-// pipeline to wire this up automatically.
-
-const STORAGE_KEY = "formAgent.config";
+// HTML/JS rather than something injected at build time. The pipeline's
+// DeployBackend step (infra/lib/pipeline-stack.ts) writes the real
+// ApiUrl/WebSocketUrl into this file — via S3 + a CloudFront invalidation —
+// right after the backend deploys, so this is populated automatically and
+// nobody should ever need to enter these by hand.
 
 let cached = null;
 
 export async function loadConfig() {
   if (cached) return cached;
+  cached = await fetchConfig();
+  return cached;
+}
 
-  let fromFile = { apiUrl: "", wsUrl: "" };
-  try {
-    const res = await fetch("./config.json", { cache: "no-store" });
-    if (res.ok) fromFile = await res.json();
-  } catch {
-    // config.json missing or unreachable — fall through to local overrides.
+/** Retries a few times with backoff — covers the brief window right after a
+ * fresh deploy before the CloudFront invalidation for config.json lands. */
+export async function waitForConfig(maxAttempts = 4) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const cfg = await loadConfig();
+    if (isConfigured(cfg)) return cfg;
+    if (attempt < maxAttempts) {
+      cached = null;
+      await sleep(1000 * attempt);
+    }
   }
-
-  const local = readLocal();
-  cached = {
-    apiUrl: local.apiUrl || fromFile.apiUrl || "",
-    wsUrl: local.wsUrl || fromFile.wsUrl || "",
-  };
   return cached;
 }
 
@@ -35,41 +32,25 @@ export function isConfigured(cfg) {
   return Boolean(cfg && cfg.apiUrl && cfg.wsUrl);
 }
 
-export function saveLocalConfig(apiUrl, wsUrl) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ apiUrl, wsUrl }));
-  cached = { apiUrl, wsUrl };
-}
-
-function readLocal() {
+async function fetchConfig() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    const res = await fetch("./config.json", { cache: "no-store" });
+    if (res.ok) return await res.json();
   } catch {
-    return {};
+    // network hiccup — treated the same as "not ready yet" by the caller
   }
+  return { apiUrl: "", wsUrl: "" };
 }
 
-/** Renders a one-time "paste your backend URLs" prompt into `container`
- * when the app has no usable config yet, and resolves once one is saved. */
-export function promptForConfig(container) {
-  return new Promise((resolve) => {
-    const el = document.createElement("div");
-    el.className = "setup-banner";
-    el.innerHTML = `
-      <strong>Backend not configured yet.</strong>
-      <p>Paste the API and WebSocket URLs from the deployed backend stack's outputs
-      (<code>ApiUrl</code> / <code>WebSocketUrl</code>). This is remembered on this device only.</p>
-      <input type="text" placeholder="https://xxxx.execute-api.region.amazonaws.com/dev" data-role="api" />
-      <input type="text" placeholder="wss://xxxx.execute-api.region.amazonaws.com/dev" data-role="ws" />
-      <button class="primary" type="button">Save</button>
-    `;
-    container.prepend(el);
-    el.querySelector("button").addEventListener("click", () => {
-      const apiUrl = el.querySelector('[data-role="api"]').value.trim();
-      const wsUrl = el.querySelector('[data-role="ws"]').value.trim();
-      if (!apiUrl || !wsUrl) return;
-      saveLocalConfig(apiUrl, wsUrl);
-      el.remove();
-      resolve({ apiUrl, wsUrl });
-    });
-  });
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Friendly, non-technical notice for the rare case config.json still isn't
+ * ready after retrying — no URLs, no form, nothing for an end user to act on. */
+export function showUnavailableNotice(container) {
+  const el = document.createElement("div");
+  el.className = "setup-banner";
+  el.innerHTML = `<strong>Just a moment.</strong><p>The service is finishing setup — try refreshing in a minute.</p>`;
+  container.prepend(el);
 }

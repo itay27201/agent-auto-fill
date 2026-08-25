@@ -1,13 +1,13 @@
-import { loadConfig, isConfigured, promptForConfig } from "./config.js";
+import { waitForConfig, isConfigured, showUnavailableNotice } from "./config.js";
 import { createApi, uploadToS3 } from "./api.js";
 
 const dropZone = document.getElementById("drop-zone");
 const fileInput = document.getElementById("file-input");
 const statusLine = document.getElementById("status-line");
 
-let cfg = await loadConfig();
+let cfg = await waitForConfig();
 if (!isConfigured(cfg)) {
-  cfg = await promptForConfig(document.querySelector(".upload-shell"));
+  showUnavailableNotice(document.querySelector(".upload-shell"));
 }
 
 dropZone.addEventListener("click", () => fileInput.click());

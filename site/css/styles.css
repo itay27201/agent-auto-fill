@@ -109,6 +109,7 @@ a { color: var(--brand); }
 
 .viewer-pane {
   overflow: auto;
+  min-height: 0; /* grid items default to min-height:auto, which lets tall page images stretch this row past .app's 100vh instead of scrolling internally */
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -160,7 +161,7 @@ a { color: var(--brand); }
   min-height: 0;
 }
 
-.fields-panel { overflow: auto; padding: 12px; }
+.fields-panel { overflow: auto; min-height: 0; padding: 12px; }
 .field-row {
   border: 1px solid var(--border);
   border-radius: var(--radius);

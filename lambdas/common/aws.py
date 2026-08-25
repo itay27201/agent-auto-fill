@@ -2,7 +2,10 @@
 container reuse doesn't pay client-construction cost on every invocation."""
 from __future__ import annotations
 
+import os
+
 import boto3
+from botocore.client import Config as BotoConfig
 
 from . import config
 
@@ -23,9 +26,19 @@ def ddb():
 
 
 def s3():
+    """Explicit region + SigV4 + virtual-hosted addressing. Without this,
+    presigned URLs came out signed for the legacy global s3.amazonaws.com
+    endpoint (SigV2-style: AWSAccessKeyId/Signature/Expires query params) —
+    S3 then 307-redirects PUTs to the bucket's real regional endpoint, and
+    the browser reports that redirect as a CORS failure (S3's redirect
+    response doesn't carry the CORS headers the follow-up request needs)."""
     global _s3
     if _s3 is None:
-        _s3 = boto3.client("s3")
+        _s3 = boto3.client(
+            "s3",
+            region_name=os.environ.get("AWS_REGION"),
+            config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+        )
     return _s3
 
 

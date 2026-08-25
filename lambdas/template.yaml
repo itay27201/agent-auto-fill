@@ -245,7 +245,11 @@ Resources:
       Environment: { Variables: { INGEST_STATE_MACHINE_ARN: !Ref IngestStateMachine } }
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - S3ReadPolicy: { BucketName: !Ref DocsBucket }
+        # No S3ReadPolicy on DocsBucket here: on_upload() never reads the
+        # object, only the event record — and granting it would recreate a
+        # circular dependency (DocsBucket's NotificationConfiguration
+        # already depends on this function; a role policy referencing
+        # DocsBucket back would make the function depend on the bucket too).
         - StepFunctionsExecutionPolicy: { StateMachineName: !GetAtt IngestStateMachine.Name }
 
   OnUploadPermission:

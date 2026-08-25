@@ -33,8 +33,13 @@ Globals:
     Environment:
       Variables:
         TABLE_NAME: !Ref Table
-        DOCS_BUCKET: !Ref DocsBucket
-        ARTIFACTS_BUCKET: !Ref ArtifactsBucket
+        # DOCS_BUCKET/ARTIFACTS_BUCKET are deliberately NOT global: SAM's
+        # Globals.Function.Environment.Variables merges into every function
+        # (Globals values can't be unset per-function, only overridden), and
+        # OnUploadFn is triggered BY DocsBucket -- if it also depended ON
+        # DocsBucket via an inherited env var, the two resources would
+        # depend on each other. Each function below declares only the
+        # bucket(s) it actually uses.
         BEDROCK_MODEL_ID: !Ref BedrockModelId
         BEDROCK_REGION: !Ref AWS::Region
         ALLOWED_ORIGIN: !Ref AllowedOrigin
@@ -165,7 +170,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: functions/api_create_session.lambda_handler
-      Environment: { Variables: { UPLOAD_URL_TTL: "900" } }
+      Environment: { Variables: { UPLOAD_URL_TTL: "900", DOCS_BUCKET: !Ref DocsBucket } }
       Policies:
         - DynamoDBWritePolicy: { TableName: !Ref Table }
         - S3WritePolicy: { BucketName: !Ref DocsBucket }
@@ -180,6 +185,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: functions/api_get_session.lambda_handler
+      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
       Policies:
         - DynamoDBReadPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref DocsBucket }
@@ -195,6 +201,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: functions/api_set_fields.lambda_handler
+      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
@@ -209,6 +216,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: functions/api_validate.lambda_handler
+      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
       Policies:
         - DynamoDBReadPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
@@ -225,6 +233,7 @@ Resources:
       Handler: functions/api_render.lambda_handler
       MemorySize: 2048
       Timeout: 120
+      Environment: { Variables: { DOCS_BUCKET: !Ref DocsBucket, ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
       Policies:
         - DynamoDBReadPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref DocsBucket }
@@ -242,15 +251,26 @@ Resources:
     Properties:
       CodeUri: .
       Handler: functions/ingest_classify.on_upload
-      Environment: { Variables: { INGEST_STATE_MACHINE_ARN: !Ref IngestStateMachine } }
+      Environment:
+        Variables:
+          # Literal ARN (built from the explicit Name above), not !Ref
+          # IngestStateMachine -- see the comment on that resource for why.
+          INGEST_STATE_MACHINE_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:agent-auto-fill-ingest-${Stage}"
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        # No S3ReadPolicy on DocsBucket here: on_upload() never reads the
-        # object, only the event record — and granting it would recreate a
-        # circular dependency (DocsBucket's NotificationConfiguration
-        # already depends on this function; a role policy referencing
-        # DocsBucket back would make the function depend on the bucket too).
-        - StepFunctionsExecutionPolicy: { StateMachineName: !GetAtt IngestStateMachine.Name }
+        # Deliberately no DOCS_BUCKET/ARTIFACTS_BUCKET env vars and no
+        # S3ReadPolicy on DocsBucket: on_upload() never reads the object,
+        # only the event record, and this function is triggered BY
+        # DocsBucket (see its NotificationConfiguration below) -- if it also
+        # depended ON DocsBucket, the two resources would form a circular
+        # dependency. Same reason OnUploadPermission below is scoped by
+        # SourceAccount rather than a SourceArn naming this bucket, and the
+        # policy below names the state machine by literal ARN rather than
+        # !Ref/!GetAtt.
+        - Statement:
+            - Effect: Allow
+              Action: states:StartExecution
+              Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:agent-auto-fill-ingest-${Stage}"
 
   OnUploadPermission:
     Type: AWS::Lambda::Permission
@@ -267,6 +287,7 @@ Resources:
       Handler: functions/ingest_classify.lambda_handler
       MemorySize: 1536
       Timeout: 120
+      Environment: { Variables: { DOCS_BUCKET: !Ref DocsBucket, ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref DocsBucket }
@@ -281,6 +302,7 @@ Resources:
       Handler: functions/ingest_extract.lambda_handler
       MemorySize: 3008          # rasterizing 20 pages is memory-bound
       Timeout: 600
+      Environment: { Variables: { DOCS_BUCKET: !Ref DocsBucket, ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref DocsBucket }
@@ -295,6 +317,7 @@ Resources:
       Handler: functions/ingest_enrich.lambda_handler
       MemorySize: 2048
       Timeout: 900
+      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
@@ -313,6 +336,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: functions/ingest_finalize.lambda_handler
+      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
@@ -329,6 +353,14 @@ Resources:
   IngestStateMachine:
     Type: AWS::Serverless::StateMachine
     Properties:
+      # Explicit name so OnUploadFn can reference this state machine's ARN as
+      # a literal string (below) instead of !Ref/!GetAtt. OnUploadFn is
+      # triggered BY DocsBucket; this machine's role in turn depends on
+      # ClassifyFn/ExtractFn, which depend on DocsBucket -- so a real !Ref
+      # from OnUploadFn to this resource would close a circular dependency
+      # through that chain. The physical resource is identical either way,
+      # this only changes what CloudFormation's dependency graph sees.
+      Name: !Sub "agent-auto-fill-ingest-${Stage}"
       DefinitionUri: statemachine/ingest.asl.json
       DefinitionSubstitutions:
         ClassifyArn: !GetAtt ClassifyFn.Arn
@@ -361,6 +393,7 @@ Resources:
       Environment:
         Variables:
           WS_ENDPOINT: !Sub "https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+          ARTIFACTS_BUCKET: !Ref ArtifactsBucket
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }

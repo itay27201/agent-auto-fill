@@ -29,12 +29,19 @@ export class PipelineStack extends cdk.Stack {
       }),
     });
 
+    // Built before deployBackend so its SiteStack's stackName (needed below
+    // to look up the site bucket/distribution) is available to reference.
+    const deployStage = new SiteStage(this, 'Deploy', { env: props?.env });
+
     // Deploys the SAM backend in lambdas/ alongside the CDK-managed site stack.
     // Runs `sam build --use-container` because the layer/functions target
     // arm64 (Globals.Function.Architectures in lambdas/template.yaml) and the
     // CodeBuild host is x86_64 — container build cross-compiles correctly.
     const deployBackend = new pipelines.CodeBuildStep('DeployBackend', {
       input: source,
+      env: {
+        SITE_STACK_NAME: deployStage.siteStack.stackName,
+      },
       buildEnvironment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
         privileged: true,
@@ -46,6 +53,21 @@ export class PipelineStack extends cdk.Stack {
         'sam deploy --no-confirm-changeset --no-fail-on-empty-changeset --resolve-s3' +
           ` --stack-name ${BACKEND_STACK_NAME} --region eu-west-1 --capabilities CAPABILITY_IAM` +
           ` --parameter-overrides BedrockModelId=${BEDROCK_MODEL_ID}`,
+        // Publish this run's ApiUrl/WebSocketUrl into the already-deployed
+        // site's config.json — SiteStack (CDK) and the backend (SAM) are
+        // independent deployments, so nothing else copies these across.
+        'cd ..',
+        `API_URL=$(aws cloudformation describe-stacks --stack-name ${BACKEND_STACK_NAME} --region eu-west-1` +
+          ' --query "Stacks[0].Outputs[?OutputKey==\'ApiUrl\'].OutputValue" --output text)',
+        `WS_URL=$(aws cloudformation describe-stacks --stack-name ${BACKEND_STACK_NAME} --region eu-west-1` +
+          ' --query "Stacks[0].Outputs[?OutputKey==\'WebSocketUrl\'].OutputValue" --output text)',
+        'SITE_BUCKET=$(aws cloudformation describe-stacks --stack-name "$SITE_STACK_NAME" --region eu-west-1' +
+          ' --query "Stacks[0].Outputs[?OutputKey==\'SiteBucketName\'].OutputValue" --output text)',
+        'SITE_DIST_ID=$(aws cloudformation describe-stacks --stack-name "$SITE_STACK_NAME" --region eu-west-1' +
+          ' --query "Stacks[0].Outputs[?OutputKey==\'SiteDistributionId\'].OutputValue" --output text)',
+        'printf \'{"apiUrl":"%s","wsUrl":"%s"}\' "$API_URL" "$WS_URL" > config.json',
+        'aws s3 cp config.json "s3://$SITE_BUCKET/config.json" --content-type application/json',
+        'aws cloudfront create-invalidation --distribution-id "$SITE_DIST_ID" --paths "/config.json"',
       ],
       // Broad by request: the backend stack itself creates IAM roles, KMS
       // keys, API Gateway, and Step Functions, so scope this down to the
@@ -53,15 +75,17 @@ export class PipelineStack extends cdk.Stack {
       rolePolicyStatements: [new iam.PolicyStatement({ actions: ['*'], resources: ['*'] })],
     });
 
-    pipeline.addStage(new SiteStage(this, 'Deploy', { env: props?.env }), {
+    pipeline.addStage(deployStage, {
       post: [deployBackend],
     });
   }
 }
 
 class SiteStage extends cdk.Stage {
+  public readonly siteStack: SiteStack;
+
   constructor(scope: Construct, id: string, props?: cdk.StageProps) {
     super(scope, id, props);
-    new SiteStack(this, 'Site');
+    this.siteStack = new SiteStack(this, 'Site');
   }
 }

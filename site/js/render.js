@@ -52,7 +52,7 @@ function renderResult(result) {
 
 function issueRow(label, message) {
   const row = document.createElement("div");
-  row.className = "item";
+  row.className = "item issue-row";
   const text = document.createElement("span");
   text.setAttribute("dir", "auto");
   text.textContent = `${label}: ${message}`;
@@ -62,7 +62,7 @@ function issueRow(label, message) {
 
 function confirmRow(fieldId, label) {
   const row = document.createElement("div");
-  row.className = "item";
+  row.className = "item confirm-row";
   const text = document.createElement("span");
   text.setAttribute("dir", "auto");
   text.textContent = label || fieldId;

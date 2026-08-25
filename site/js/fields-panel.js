@@ -16,6 +16,16 @@ let container;
 let api;
 let onNeedsRefetch;
 
+const TYPE_TAGS = {
+  date: "Date",
+  number: "Number",
+  signature: "Signature",
+  checkbox: "Yes / No",
+  select: "Choice",
+  multiselect: "Multi-choice",
+  textarea: "Long text",
+};
+
 export function initFieldsPanel(el, apiClient, refetchFn) {
   container = el;
   api = apiClient;
@@ -77,6 +87,7 @@ function fieldRow(f) {
   const row = document.createElement("div");
   row.className = "field-row" + (isDraft ? " draft" : "") + (selected ? " selected" : "");
   row.dataset.fieldId = f.field_id;
+  row.dataset.type = f.type || "text";
 
   const head = document.createElement("div");
   head.className = "row-head";
@@ -100,6 +111,15 @@ function fieldRow(f) {
   }
 
   head.append(toggle, label);
+
+  const typeTag = TYPE_TAGS[f.type];
+  if (typeTag) {
+    const tag = document.createElement("span");
+    tag.className = "field-type-tag";
+    tag.textContent = typeTag;
+    head.appendChild(tag);
+  }
+
   row.appendChild(head);
   row.appendChild(inputFor(f, v));
 

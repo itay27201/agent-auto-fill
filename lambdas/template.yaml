@@ -20,7 +20,12 @@ Parameters:
 Globals:
   Function:
     Runtime: python3.12
-    Architectures: [arm64]          # ~20% cheaper, all deps have aarch64 wheels
+    # x86_64, not arm64: the CodeBuild pipeline host is x86_64 with no QEMU
+    # cross-arch emulation set up, and `sam build --use-container` can't run
+    # an arm64 build container there (fails with "exec format error"). arm64
+    # would save ~20% on Lambda cost, but only works with either a matching
+    # build host or emulation set up first.
+    Architectures: [x86_64]
     MemorySize: 1024
     Timeout: 30
     Tracing: Active
@@ -134,7 +139,7 @@ Resources:
     Properties:
       ContentUri: layer/
       CompatibleRuntimes: [python3.12]
-      CompatibleArchitectures: [arm64]
+      CompatibleArchitectures: [x86_64]
     Metadata:
       BuildMethod: python3.12
 

@@ -7,6 +7,9 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 
 export class SiteStack extends cdk.Stack {
+  public readonly siteBucket: s3.Bucket;
+  public readonly distribution: cloudfront.Distribution;
+
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -16,6 +19,7 @@ export class SiteStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
     });
+    this.siteBucket = siteBucket;
 
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
       defaultRootObject: 'index.html',
@@ -36,8 +40,20 @@ export class SiteStack extends cdk.Stack {
       distributionPaths: ['/*'],
     });
 
+    this.distribution = distribution;
+
     new cdk.CfnOutput(this, 'SiteURL', {
       value: `https://${distribution.distributionDomainName}`,
+    });
+    // Consumed by the DeployBackend CodeBuild step (see pipeline-stack.ts) to
+    // publish the backend's ApiUrl/WebSocketUrl into config.json after the
+    // SAM stack deploys — this stack has no CDK reference to that stack's
+    // outputs, so it's looked up by name at pipeline-run time instead.
+    new cdk.CfnOutput(this, 'SiteBucketName', {
+      value: siteBucket.bucketName,
+    });
+    new cdk.CfnOutput(this, 'SiteDistributionId', {
+      value: distribution.distributionId,
     });
   }
 }

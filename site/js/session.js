@@ -10,12 +10,23 @@ import { initGuidePanel } from "./guide-panel.js";
 
 const POLL_START_MS = 1500;
 const POLL_MAX_MS = 5000;
+// Ingest is slow but not unbounded. Past this we stop polling and say so,
+// rather than leaving someone watching a spinner that will never resolve.
+const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+// A single failed poll is usually the session row not being readable yet, or
+// a blip. Only give up once they stack up.
+const MAX_CONSECUTIVE_ERRORS = 4;
 
 const sid = new URLSearchParams(window.location.search).get("sid");
 const titleEl = document.getElementById("doc-title");
 const progressEl = document.getElementById("progress");
 const appEl = document.getElementById("app");
 const errorEl = document.getElementById("session-error");
+const loadingEl = document.getElementById("session-loading");
+const loadingDecorEl = document.getElementById("loading-decor");
+const loadingTitleEl = document.getElementById("loading-title");
+const loadingNoteEl = document.getElementById("loading-note");
+const loadingBackEl = document.getElementById("loading-back");
 
 if (!sid) {
   showFatal("No session id in the URL. Start from the upload page.");
@@ -26,6 +37,7 @@ if (!sid) {
 async function boot() {
   const cfg = await waitForConfig();
   if (!isConfigured(cfg)) {
+    hideLoading();
     showUnavailableNotice(document.body);
     return;
   }
@@ -45,11 +57,31 @@ async function boot() {
 
 async function pollUntilReady(api, sessionId) {
   let delay = POLL_START_MS;
+  let errors = 0;
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+
+  setLoadingStatus("Getting your document ready...");
   for (;;) {
-    const session = await api.getSession(sessionId);
+    let session;
+    try {
+      session = await api.getSession(sessionId);
+      errors = 0;
+    } catch (err) {
+      if (++errors >= MAX_CONSECUTIVE_ERRORS) throw err;
+      await sleep(delay);
+      continue;
+    }
+
     titleEl.textContent = session.filename || "Document";
-    progressEl.textContent = describeProgress(session);
+    if (session.filename) loadingTitleEl.textContent = `Reading ${session.filename}`;
+    const progress = describeProgress(session);
+    progressEl.textContent = progress;
+    setLoadingStatus(progress);
+
     if (session.status === "ready" || session.status === "failed") return session;
+    if (Date.now() > deadline) {
+      throw new Error("This document is taking longer than expected. Try uploading it again.");
+    }
     await sleep(delay);
     delay = Math.min(delay * 1.3, POLL_MAX_MS);
   }
@@ -63,6 +95,7 @@ function describeProgress(session) {
 
 function startApp(api, cfg, session) {
   setSession(session);
+  hideLoading();
   appEl.classList.remove("hidden");
   progressEl.textContent = `${session.field_count ?? state.fields.length} fields`;
 
@@ -125,9 +158,25 @@ function flashProgress(message, holdMs = 4000) {
   }, holdMs);
 }
 
+function setLoadingStatus(text) {
+  if (loadingEl.classList.contains("hidden")) return;
+  errorEl.textContent = text;
+}
+
+function hideLoading() {
+  loadingEl.classList.add("hidden");
+  loadingDecorEl.classList.add("hidden");
+}
+
 function showFatal(message) {
+  appEl.classList.add("hidden");
+  loadingEl.classList.remove("hidden");
+  loadingDecorEl.classList.remove("hidden");
+  loadingTitleEl.textContent = "Something went wrong";
+  loadingNoteEl.classList.add("hidden");
+  loadingBackEl.classList.remove("hidden");
   errorEl.textContent = message;
-  errorEl.classList.remove("hidden");
+  errorEl.classList.add("error");
 }
 
 function sleep(ms) {

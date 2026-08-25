@@ -191,6 +191,14 @@ Resources:
         # the table's existing data key, not just encrypt with it. Encrypt
         # alone (confirmed live: AccessDeniedException on kms:Decrypt).
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
         - KMSDecryptPolicy: { KeyId: !Ref Key }
       Events:
         Post:
@@ -257,6 +265,14 @@ Resources:
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
         - KMSDecryptPolicy: { KeyId: !Ref Key }
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
       Events:
         Post:
           Type: Api
@@ -309,6 +325,14 @@ Resources:
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
         - KMSDecryptPolicy: { KeyId: !Ref Key }
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
       Events:
         Post:
           Type: Api
@@ -325,6 +349,14 @@ Resources:
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
         - KMSDecryptPolicy: { KeyId: !Ref Key }
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
       Events:
         Patch:
           Type: Api
@@ -341,6 +373,14 @@ Resources:
         - S3WritePolicy: { BucketName: !Ref ArtifactsBucket }
         # DynamoDB read needs kms:Decrypt too, not just S3's kms:Encrypt.
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
         - KMSDecryptPolicy: { KeyId: !Ref Key }
       Events:
         Post:
@@ -358,6 +398,14 @@ Resources:
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
         - KMSDecryptPolicy: { KeyId: !Ref Key }
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
       Events:
         Post:
           Type: Api
@@ -416,6 +464,14 @@ Resources:
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
         - KMSDecryptPolicy: { KeyId: !Ref Key }
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
 
   ExtractFn:
     Type: AWS::Serverless::Function
@@ -431,6 +487,14 @@ Resources:
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
         - KMSDecryptPolicy: { KeyId: !Ref Key }
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
 
   EnrichFn:
     Type: AWS::Serverless::Function
@@ -465,6 +529,14 @@ Resources:
         # Same reason as CreateSessionFn: DynamoDB writes need Decrypt, not
         # just Encrypt -- and copy_schema's S3 CopySource read needs it too.
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
         - KMSDecryptPolicy: { KeyId: !Ref Key }
 
   IngestFailedFn:
@@ -591,6 +663,14 @@ Resources:
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
         - KMSDecryptPolicy: { KeyId: !Ref Key }
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # KMSEncryptPolicy grants kms:Encrypt only. S3 PutObject/CopyObject
+        # against an SSE-KMS bucket calls kms:GenerateDataKey to create a new
+        # per-object data key -- a different action, confirmed live as a 403
+        # on a presigned PUT signed with only kms:Encrypt.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
         - Statement:
             - Effect: Allow
               Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]

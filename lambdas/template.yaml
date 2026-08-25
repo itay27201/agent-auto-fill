@@ -108,8 +108,11 @@ Resources:
         RestrictPublicBuckets: true
       LifecycleConfiguration:
         Rules:
-          # Session artifacts expire; schemas under the registry prefix do not,
-          # because the registry is what makes repeat forms free.
+          # Session artifacts expire. Schemas and everything under catalog/ do
+          # not: the registry is what makes repeat forms free, and a catalog
+          # entry has to outlive every session that used it. Both rules are
+          # prefix-scoped for exactly that reason — an unscoped rule here
+          # would quietly delete the catalog after a week.
           - Id: purge-derived
             Status: Enabled
             Prefix: derived/
@@ -118,6 +121,15 @@ Resources:
             Status: Enabled
             Prefix: outputs/
             ExpirationInDays: 7
+      # Instruction booklets are uploaded browser -> S3 with a presigned PUT,
+      # the same as form uploads to DocsBucket, so this bucket needs the same
+      # CORS allowance. It stays private otherwise: reads are presigned GETs.
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [PUT]
+            AllowedOrigins: [!Ref AllowedOrigin]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
 
   Table:
     Type: AWS::DynamoDB::Table
@@ -174,7 +186,12 @@ Resources:
       Policies:
         - DynamoDBWritePolicy: { TableName: !Ref Table }
         - S3WritePolicy: { BucketName: !Ref DocsBucket }
+        # DynamoDB SSE with a customer-managed KMS key needs kms:Decrypt on
+        # every table operation, including writes -- PutItem has to decrypt
+        # the table's existing data key, not just encrypt with it. Encrypt
+        # alone (confirmed live: AccessDeniedException on kms:Decrypt).
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
       Events:
         Post:
           Type: Api
@@ -245,6 +262,107 @@ Resources:
           Type: Api
           Properties: { RestApiId: !Ref Api, Path: "/sessions/{session_id}/render", Method: POST }
 
+  # ---------------------------------------------------------------- catalog
+  # The closed list of forms an agency issues. Defining an entry reuses the
+  # ingest pipeline; filling one from the catalog skips it entirely.
+
+  CatalogListFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_catalog_list.lambda_handler
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref Table }
+        # DynamoDB SSE with a customer-managed key needs kms:Decrypt on
+        # every table operation, reads included.
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Get:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /catalog, Method: GET }
+
+  CatalogGetFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_catalog_get.lambda_handler
+      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Get:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/catalog/{catalog_id}", Method: GET }
+
+  CatalogCreateFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_catalog_create.lambda_handler
+      Timeout: 60          # copies the master, the schema and every page raster
+      Environment: { Variables: { DOCS_BUCKET: !Ref DocsBucket, ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DocsBucket }
+        - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Post:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /catalog, Method: POST }
+
+  CatalogUpdateFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_catalog_update.lambda_handler
+      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Patch:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/catalog/{catalog_id}", Method: PATCH }
+
+  CatalogSourceFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_catalog_source.lambda_handler
+      Environment: { Variables: { UPLOAD_URL_TTL: "900", ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref Table }
+        - S3WritePolicy: { BucketName: !Ref ArtifactsBucket }
+        # DynamoDB read needs kms:Decrypt too, not just S3's kms:Encrypt.
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Post:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/catalog/{catalog_id}/sources", Method: POST }
+
+  CatalogSessionFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_catalog_session.lambda_handler
+      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+      Events:
+        Post:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/catalog/{catalog_id}/sessions", Method: POST }
+
   # ----------------------------------------------------------------- ingest
   OnUploadFn:
     Type: AWS::Serverless::Function
@@ -258,6 +376,10 @@ Resources:
           INGEST_STATE_MACHINE_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:agent-auto-fill-ingest-${Stage}"
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        # DynamoDB SSE with a customer-managed key needs kms:Decrypt on every
+        # table operation (get_session/update_session here), not just writes
+        # of new data -- same reason as CreateSessionFn.
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
         # Deliberately no DOCS_BUCKET/ARTIFACTS_BUCKET env vars and no
         # S3ReadPolicy on DocsBucket: on_upload() never reads the object,
         # only the event record, and this function is triggered BY
@@ -340,7 +462,10 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        # Same reason as CreateSessionFn: DynamoDB writes need Decrypt, not
+        # just Encrypt -- and copy_schema's S3 CopySource read needs it too.
         - KMSEncryptPolicy: { KeyId: !Ref Key }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
 
   IngestFailedFn:
     Type: AWS::Serverless::Function
@@ -349,6 +474,8 @@ Resources:
       Handler: functions/ingest_finalize.on_failure
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        # Same DynamoDB-writes-need-Decrypt reason as CreateSessionFn.
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
 
   IngestStateMachine:
     Type: AWS::Serverless::StateMachine
@@ -443,6 +570,58 @@ Resources:
       ApiId: !Ref WsApi
       RouteKey: message
       Target: !Sub "integrations/${WsIntegration}"
+
+  # The second agent. Same WebSocket API — RouteSelectionExpression is
+  # $request.body.action, so `author` reaches a different Lambda with a
+  # different prompt and a disjoint tool set. It can write a catalog guide and
+  # cannot touch anyone's form values; AgentChatFn is the reverse.
+  AuthorChatFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/author_chat.lambda_handler
+      MemorySize: 1024
+      Timeout: 300
+      Environment:
+        Variables:
+          WS_ENDPOINT: !Sub "https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+          ARTIFACTS_BUCKET: !Ref ArtifactsBucket
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+                - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6"
+            - Effect: Allow
+              Action: execute-api:ManageConnections
+              Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
+
+  AuthorChatPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AuthorChatFn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
+
+  WsAuthorIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WsApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorChatFn.Arn}/invocations"
+
+  WsAuthorRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: author
+      Target: !Sub "integrations/${WsAuthorIntegration}"
 
   WsStage:
     Type: AWS::ApiGatewayV2::Stage

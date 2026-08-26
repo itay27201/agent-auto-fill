@@ -108,7 +108,15 @@ MAX_INGEST_PAGES = int(os.environ.get("MAX_INGEST_PAGES", "20"))
 # help text, validation, bbox — runs ~200 tokens, so a form with a hundred
 # fields needs far more than the 4096 a chat turn gets. Measured: two pages
 # of the ITC-101 income-tax form blew straight past 8192 and truncated.
-ENRICH_MAX_TOKENS = int(os.environ.get("ENRICH_MAX_TOKENS", "32000"))
+#
+# Thinking counts against this too, which is what 32000 ran out of rather than
+# the answer being long. Observed live on page one of the 101, at 92 regions and
+# INGEST_EFFORT=high: the budget was gone after 3029 characters of JSON, so
+# essentially all of it went on reasoning. Opus 4.8 caps at 128000 and llm_json
+# streams, so there is room; 64000 leaves the define pass enough to think about a
+# dense page and still write the schema. The effort setting is deliberate and
+# stays where it is — this is billed once per form.
+ENRICH_MAX_TOKENS = int(os.environ.get("ENRICH_MAX_TOKENS", "64000"))
 
 # ---------------------------------------------------------------- authoring
 # Field notes are written in chunks, not one tool call per field. 97 separate

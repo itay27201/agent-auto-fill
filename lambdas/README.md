@@ -33,6 +33,7 @@ functions/
   api_catalog_update.py   PATCH  /catalog/{cid}        edit + publish
   api_catalog_source.py   POST   /catalog/{cid}/sources
   api_catalog_session.py  POST   /catalog/{cid}/sessions   <- the fast path
+  api_catalog_reingest.py POST   /catalog/{cid}/reingest   <- rebuild its boxes
   ingest_classify.py      S3 trigger + step 1
   ingest_extract.py       step 2
   ingest_enrich.py        step 3 (the only Bedrock call in ingest)
@@ -69,7 +70,7 @@ cheap and has to be accurate. The pipeline is priced accordingly:
 |---|---|---|
 | When | catalog authoring, or the first upload of an unseen document | every session, including every registry cache hit |
 | Model | `IngestModelId` — Opus 4.8 | `BedrockModelId` — Sonnet 4.6 |
-| Geometry | read from the PDF; Textract only for scans | none, reads `schema.json` |
+| Geometry | read from the PDF, plus a Textract pass | none, reads `schema.json` |
 | Writes | `schema.json`, `form-map.md`, `guide.md` | field values |
 
 `llm_json.invoke_json` defaults to the ingest tier because every caller of it is
@@ -202,6 +203,33 @@ markdown, so the page re-renders live), `turn_end`, `error`.
 separate step. This is why the same agent works across PDF, DOCX, fillable
 and flat.
 
+**The geometry is reconstructed per table, not per page.** The obvious way to
+rebuild a grid — one sorted list of every y on the page, one of every x, pair
+adjacent values — is wrong on any page with more than one table, and a
+government form is eight of them. Section א's columns get sliced by the children
+table's columns three hundred points further down, and the true cell is never
+even a candidate: on the 101 that reconstructed *one* cell for the whole of page
+one. `geometry.cells` scopes the columns to the row band instead, so each table
+reconstructs against its own grid. Same page, same rules, 60 cells.
+
+Two supporting details, both load-bearing. Rule positions are *clustered* rather
+than rounded, because two strokes 0.2pt apart are one border and rounding makes
+them two grid lines with a hairline cell between. And an edge counts as covered
+by the *union* of collinear rules, because a table border is routinely drawn one
+segment per cell and demanding a single spanning rule rejects the row.
+
+**A cell that contains its own label is still a writing area.** Plenty of forms
+do not give labels a row of their own: `שם` is printed in the top corner of the
+box you write the name into. Rejecting every cell with text in it loses sections
+א, ב and ו of the 101 — every field anyone actually fills. `_under_label` keeps
+those and takes the space beneath the label, and hands the label itself to the
+model as `nearby_text`, where it is the best disambiguator there is. The
+opposite layout — a header row of labels with empty cells under it — is settled
+by the form itself: if it drew an empty box under the label, that is the box.
+
+Measured on page one of the 101: 2 candidate regions before these two changes,
+55 after.
+
 **A model picks a box; it never invents one.** The flat path used to ask the
 vision model to estimate four normalized floats per field from a page image.
 That is the one thing vision models are worst at, and on the Israeli 101 form it
@@ -229,6 +257,31 @@ and flags it in the panel, `api_render` refuses to stamp it, and a strict render
 refuses to export while a filled field has nowhere to go. This is the same rule
 `set_field` enforces for values: a blank box is always better than a wrong one
 on an official form.
+
+**Textract answers "where", the model answers "what".** Reconstructing cells
+from ruled lines reaches about three quarters of the 101's first page and cannot
+reach the rest — a writing area with no ruled box around it leaves nothing to
+reconstruct, and a scan has no lines at all. `common/ocr.py` fills those gaps,
+and it runs in exactly two situations: a page with no text layer, and while a
+form is being *defined*. Never on an ordinary upload.
+
+The part worth paying for is not the extra rectangles. Textract's
+`KEY_VALUE_SET` says which printed label each box belongs to, and that link is
+precisely what cell reconstruction throws away. `textract_label` carries it to
+the model as a named candidate — *"this box is probably labelled שם"* — which it
+confirms or overrides against the page image. Position stays Textract's to
+decide and meaning stays the model's, so a wrong label costs a hint, never a box.
+
+**A catalog entry can be rebuilt, but never behind your back.** The catalog path
+copies the entry's own `schema.json` and never consults the registry, so
+`SCHEMA_VERSION` cannot reach it — which is why a form defined by an older
+pipeline kept serving its old boxes even after the pipeline improved.
+`POST /catalog/{cid}/reingest` re-reads the entry's stored master through the
+ordinary state machine and hands back a session; you look at the result and then
+`PATCH /catalog/{cid}` with `adopt_schema_from_session`. Two steps on purpose:
+an entry can hold boxes a person placed by hand and a guide a person reviewed,
+and both survive the adoption. Discarding reviewed work to pick up a better
+default is not a trade the system gets to make on its own.
 
 **Anyone can move a box.** Before `api_set_schema` there was no path anywhere in
 the system to fix a bbox — not the API, not the UI, not the authoring agent —
@@ -358,13 +411,13 @@ All eight run without AWS credentials.
   author-or-admin check is a policy change rather than a migration.
 - **DOCX → PDF** needs LibreOffice, which is ~400MB — past the 250MB layer
   limit. `ExtractFn` has to become a container image function.
-- **Textract on Hebrew scans.** It is wired in (`common/ocr.py`) but only fires
-  for a page with no text layer at all, which is a scan or a photograph —
-  everything else gets exact geometry out of the PDF for free. Its Hebrew
-  key/value detection is markedly weaker than its English, so on a Hebrew scan
-  expect it to find some boxes and miss others. That is survivable rather than
-  good: a missed field is left unplaced rather than placed wrongly, and the
-  viewer's box editor is how the rest get placed.
+- **Textract's Hebrew accuracy is unmeasured.** Everything else in the geometry
+  path has a number against it; this does not. Its key/value detection is
+  markedly weaker in Hebrew than in English, so treat its contribution on a
+  Hebrew form as unproven. The design limits the damage — its regions are
+  unioned with the PDF's rather than replacing them, and `textract_label` is a
+  hint the model may override — but if it turns out to add little here, the
+  cell reconstruction is what carries the result.
 - **Hebrew/RTL overlay** needs a TTF at `RTL_FONT_PATH` in the layer;
   reportlab's built-in fonts render Hebrew as black boxes. Irrelevant if
   your forms are AcroForm PDFs or English.

@@ -10,9 +10,10 @@ Publishing refuses an empty guide. An entry whose whole value proposition is
 "we already know this form" should not reach the picker saying nothing about
 it — that is a worse experience than the upload flow it replaces.
 """
-from common import catalog as cat, form_map, geometry as geo, guide as gd, guide_checks as gchk
+from common import (catalog as cat, config, form_map, geometry as geo,
+                    guide as gd, guide_checks as gchk)
 from common.api import ApiError, body_of, handler, path_param
-from common.store import load_schema, registry_store
+from common.store import get_session, load_schema, registry_store
 
 _META = ("name", "agency", "description", "language")
 
@@ -59,6 +60,58 @@ def _apply_boxes(entry: dict, updates: list) -> dict:
     }
 
 
+def _adopt_schema(entry: dict, sid: str) -> dict:
+    """Replace the entry's schema with one a re-ingest produced.
+
+    Two things are deliberately carried over rather than replaced.
+
+    `guide.md` is untouched: it is reviewed human prose about eligibility and
+    deadlines, and has nothing to do with where the boxes are.
+
+    Boxes a person placed by hand survive by `field_id`. Someone dragged those
+    onto the page precisely because ingest could not work them out, and a fresh
+    ingest is no more likely to. Losing them would mean the same person doing
+    the same work again every time the form is rebuilt.
+    """
+    sess = get_session(sid)
+    if not sess:
+        raise ApiError(f"session {sid!r} not found", 404)
+    if sess.get("status") != "ready":
+        raise ApiError(f"session {sid} is {sess.get('status')}, not ready — "
+                       "wait for the re-ingest to finish", 409)
+    if not sess.get("schema_key"):
+        raise ApiError(f"session {sid} has no schema to adopt", 409)
+
+    fields = load_schema(sess["schema_key"])
+    placed_by_hand = {
+        f.get("field_id"): f
+        for f in load_schema(entry["schema_key"])
+        if f.get("bbox_source") == "user"
+    }
+    kept = 0
+    for f in fields:
+        prior = placed_by_hand.get(f.get("field_id"))
+        if not prior:
+            continue
+        f["bbox"] = prior["bbox"]
+        f["page"] = prior.get("page", f.get("page", 1))
+        f["bbox_source"] = "user"
+        f["bbox_confidence"] = "ok"
+        f["bbox_note"] = ""
+        kept += 1
+
+    cid = entry["catalog_id"]
+    out = {
+        "schema_key": cat.put_schema(cid, fields),
+        "form_map_key": cat.put_form_map(cid, form_map.render(fields)),
+        "field_count": len(fields),
+        "schema_version": config.SCHEMA_VERSION,
+    }
+    if kept:
+        out["hand_placed_kept"] = kept
+    return out
+
+
 @handler
 def lambda_handler(event, _context):
     cid = path_param(event, "catalog_id")
@@ -80,6 +133,14 @@ def lambda_handler(event, _context):
     boxes = body.get("schema_updates")
     if boxes:
         changes.update(_apply_boxes(entry, boxes))
+
+    # Adopt a schema rebuilt by POST /catalog/{cid}/reingest. Separate from
+    # schema_updates because that edits boxes in place and this replaces the
+    # whole field list — a re-read of the document can legitimately find fields
+    # the old pipeline missed, or name them better.
+    adopt = (body.get("adopt_schema_from_session") or "").strip()
+    if adopt:
+        changes.update(_adopt_schema(entry, adopt))
 
     # Two ways to edit the guide: whole-file, from the authoring page's
     # textarea, or one section at a time, which is what the agent's tools do.

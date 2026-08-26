@@ -41,7 +41,10 @@ log = logging.getLogger()
 _RULE_THICKNESS = 0.004
 # Two rules within this of each other are the same rule drawn twice, which is
 # extremely common: a table border is often a stroke plus a fill edge.
-_MERGE_TOL = 0.003
+_MERGE_TOL = 0.004
+# A break in a table border smaller than this is a seam between two strokes, not
+# a missing edge. Borders are frequently drawn one segment per cell.
+_COVER_GAP = 0.012
 # A rule shorter than this is a tick mark or an underscore in body text, not
 # part of the form's grid.
 _MIN_RULE_LEN = 0.02
@@ -260,41 +263,76 @@ def _merge(lines: list[list[float]], axis: int) -> list[list[float]]:
 def cells(horizontal: list[list[float]], vertical: list[list[float]]) -> list[list[float]]:
     """Rectangles bounded by rules on all four sides.
 
-    The standard grid reconstruction: every adjacent pair of horizontal rules
-    and adjacent pair of vertical rules defines a candidate rectangle, kept only
-    if the bounding rules really do span it. The coverage test is what stops a
-    short rule somewhere else on the page from inventing a cell across half the
-    form.
+    The obvious implementation — one sorted list of every y on the page, one of
+    every x, pair adjacent values — is wrong on any page with more than one
+    table, and a government form is eight tables. Section א's columns get sliced
+    by the children table's columns three hundred points further down, and the
+    real cell is never even a candidate. On the 101 that reconstructed **one**
+    cell for the whole of page one.
+
+    So the columns are scoped to the row: for each band between two horizontal
+    rules, only the vertical rules that actually span that band are allowed to
+    divide it. Each table then reconstructs against its own grid and ignores
+    every other table on the page. Same page, same rules: 60 cells.
     """
-    ys = sorted({round(b[1], 4) for b in horizontal})
-    xs = sorted({round(b[0], 4) for b in vertical})
-    if len(ys) < 2 or len(xs) < 2:
+    ys = _cluster(b[1] for b in horizontal)
+    if len(ys) < 2:
         return []
 
     out = []
     for top, bottom in zip(ys, ys[1:]):
         if not (_MIN_REGION_H <= bottom - top <= _MAX_REGION_H):
             continue
+        in_band = [v for v in vertical
+                   if v[1] <= top + _COVER_GAP and v[3] >= bottom - _COVER_GAP]
+        xs = _cluster(v[0] for v in in_band)
         for left, right in zip(xs, xs[1:]):
             if not (_MIN_REGION_W <= right - left <= _MAX_REGION_W):
                 continue
-            if (_spans(horizontal, top, left, right, axis=1)
-                    and _spans(horizontal, bottom, left, right, axis=1)
-                    and _spans(vertical, left, top, bottom, axis=0)
-                    and _spans(vertical, right, top, bottom, axis=0)):
-                out.append([left, top, right, bottom])
+            if (_covered(horizontal, top, left, right, axis=1)
+                    and _covered(horizontal, bottom, left, right, axis=1)):
+                out.append([round(left, 5), round(top, 5), round(right, 5), round(bottom, 5)])
     return out
 
 
-def _spans(lines, position: float, start: float, end: float, axis: int) -> bool:
-    """Is there a rule at `position` covering [start, end] along its own axis?"""
+def _cluster(values, tol: float = _MERGE_TOL) -> list[float]:
+    """Collapse near-identical rule positions into one line each.
+
+    Rounding to a fixed number of places does not do this: two strokes 0.2pt
+    apart round to two different values and produce a grid line pair with a
+    hairline "cell" between them, which then fails every size check. Page one of
+    the 101 has 58 raw y-positions and 50 real ones.
+    """
+    out: list[list[float]] = []
+    for v in sorted(values):
+        if out and v - out[-1][-1] <= tol:
+            out[-1].append(v)
+        else:
+            out.append([v])
+    return [sum(group) / len(group) for group in out]
+
+
+def _covered(lines, position: float, start: float, end: float, axis: int) -> bool:
+    """Is [start, end] covered at `position` by the UNION of collinear rules?
+
+    Asking for a single rule that spans the whole edge is too strict: a table
+    border is routinely drawn in pieces, often one segment per cell, and one
+    unlucky break rejects the row. Gaps under `_COVER_GAP` are tolerated because
+    a real one is a hairline seam between two strokes, not a missing border.
+    """
     span = 1 - axis
-    for line in lines:
-        if abs(line[axis] - position) > _MERGE_TOL:
-            continue
-        if line[span] <= start + _MERGE_TOL and line[span + 2] >= end - _MERGE_TOL:
-            return True
-    return False
+    pieces = sorted(
+        (max(line[span], start), min(line[span + 2], end))
+        for line in lines
+        if abs(line[axis] - position) <= _MERGE_TOL
+        and line[span] < end and line[span + 2] > start
+    )
+    reach = start
+    for begins, ends in pieces:
+        if begins > reach + _COVER_GAP:
+            return False
+        reach = max(reach, ends)
+    return reach >= end - _COVER_GAP
 
 
 # --------------------------------------------------------- candidate regions
@@ -313,10 +351,19 @@ def candidate_regions(page) -> list[dict]:
     found: list[tuple[str, list[float]]] = [("cell", c) for c in cells(horizontal, vertical)]
     found += [("rule", b) for b in _underlines(horizontal, vertical, text)]
 
+    blank_cells = [b for kind, b in found if kind == "cell" and _is_blank(b, text)]
+
     regions = []
     for kind, bbox in found:
         if not _is_blank(bbox, text):
-            continue  # it holds the form's own text: a label, not a writing area
+            # Not empty — but on this kind of form that does not mean "not a
+            # writing area". See `_under_label`.
+            if _has_box_beneath(bbox, blank_cells):
+                continue  # the form gave this label its own box; use that one
+            below = _under_label(bbox, text)
+            if below is None:
+                continue  # it holds the form's own text: a label, not a box
+            bbox, kind = below, "under_label"
         if any(intersection(bbox, r["bbox"]) / max(area(bbox), 1e-9) > 0.7 for r in regions):
             continue  # already covered by a region we kept
         regions.append({"bbox": bbox, "found_by": kind})
@@ -356,6 +403,84 @@ def _underlines(horizontal, vertical, text) -> list[list[float]]:
         height = max((t["bbox"][3] - t["bbox"][1]) for t in neighbours) if neighbours else 0.018
         out.append([left, max(0.0, y - height * 1.2), right, y])
     return out
+
+
+def _has_box_beneath(bbox, blank_cells) -> bool:
+    """Does an empty cell sit directly under this one, in the same column?
+
+    Two layouts look identical to `_under_label` and mean opposite things. A form
+    that puts `שם` in the top corner of the box you write in wants the space
+    under the label. A form with a header row of labels and empty cells beneath
+    wants the cell beneath — and treating the header's leftover space as a second
+    writing area would offer two boxes for one field.
+
+    The form itself settles it: if it drew an empty box under this label, that is
+    the box.
+    """
+    x0, _, x1, y1 = bbox
+    width = max(x1 - x0, 1e-9)
+    for c in blank_cells:
+        if abs(c[1] - y1) > _COVER_GAP:
+            continue
+        overlap = min(x1, c[2]) - max(x0, c[0])
+        if overlap / width > 0.6:
+            return True
+    return False
+
+
+def merge_regions(primary: list[dict], extra: list[dict]) -> list[dict]:
+    """Fold a second source of regions into the first, then renumber.
+
+    The PDF's own geometry is exact where it works and silent where it does not;
+    Textract finds boxes in the gaps and knows which printed label each one
+    belongs to. Neither is a superset of the other, so they are unioned rather
+    than one replacing the other — and `primary` wins a tie, because a cell
+    reconstructed from ruled lines is exact while an OCR box is inferred.
+    """
+    out = [dict(r) for r in primary]
+    for candidate in extra:
+        box = candidate.get("bbox")
+        if not box or area(box) <= 0:
+            continue
+        if any(intersection(box, r["bbox"]) / max(min(area(box), area(r["bbox"])), 1e-9) > 0.6
+               for r in out):
+            continue
+        out.append(dict(candidate))
+
+    out.sort(key=lambda r: (round(r["bbox"][1], 2), -r["bbox"][2]))
+    for i, r in enumerate(out, start=1):
+        r["region_id"] = i
+    return out
+
+
+def _under_label(bbox, text, min_free: float = 0.010):
+    """The writing space below a label printed inside its own cell, or None.
+
+    Plenty of forms — the Israeli 101 among them — do not give labels a row of
+    their own. `שם` is printed in the top corner of the very cell you write the
+    name into, and the space underneath it is the box. `_is_blank` throws all of
+    those away, which on page one of the 101 is sections א, ב and ו: every field
+    the person filling the form actually cares about.
+
+    The test is that the cell's text all hugs its top edge. Text running deeper
+    than that is a paragraph or a filled-in value, and the cell is not offered.
+    """
+    x0, y0, x1, y1 = bbox
+    contents = [t for t in text
+                if x0 <= (t["bbox"][0] + t["bbox"][2]) / 2 <= x1
+                and y0 <= (t["bbox"][1] + t["bbox"][3]) / 2 <= y1]
+    if not contents:
+        return None
+
+    lowest = max(t["bbox"][3] for t in contents)
+    if lowest > y0 + (y1 - y0) * 0.55:
+        return None
+    free = y1 - lowest
+    if free < min_free:
+        return None
+    # Start just below the label rather than flush against it, so a stamped
+    # value does not collide with the form's own printing.
+    return [x0, round(lowest + free * 0.08, 5), x1, y1]
 
 
 def _is_blank(bbox, text) -> bool:
@@ -415,6 +540,58 @@ def nearby_text(bbox, text, limit: int = 4) -> list[dict]:
             out.append((ty0 - y1 + 0.9, "below", t["text"]))
     out.sort(key=lambda r: r[0])
     return [{"side": side, "text": txt[:60]} for _, side, txt in out[:limit]]
+
+
+# -------------------------------------------------------------------- snapping
+
+# How much of a box must coincide with a known region before we accept that the
+# model meant that region. Chosen by measurement, not taste: across both pages of
+# the 101 at four error magnitudes, 0.5 matched 130 boxes correctly and 2 wrongly,
+# where 0.3 matched 220 correctly and 14 wrongly. Being silent is cheap here — the
+# box is simply left as the model gave it — and being wrong is the entire bug this
+# pipeline exists to prevent, so the conservative threshold wins.
+_SNAP_MIN_OVERLAP = 0.5
+
+
+def snap(bbox, regions) -> tuple[list[float], bool]:
+    """Pull an estimated box onto the region it overlaps, if one clearly matches.
+
+    Returns the box and whether it moved.
+
+    An earlier version of this snapped each edge to the nearest ruled line
+    independently. Measured on the 101 that made boxes *worse*: page one carries
+    51 vertical rules, closer together than the error a model makes, so an edge
+    lands on the neighbouring column's border and the box drifts further from
+    where it was meant. 23 of 42 boxes degraded.
+
+    Matching a whole region by overlap cannot do that. The result is always a
+    real region rather than four unrelated lines stitched together, and when
+    nothing matches well the estimate is returned untouched — never worse than
+    it was.
+    """
+    if not bbox or len(bbox) != 4 or not regions:
+        return bbox, False
+
+    box = clamp(bbox)
+    best, score = None, 0.0
+    for r in regions:
+        candidate = r.get("bbox") if isinstance(r, dict) else r
+        if not candidate:
+            continue
+        overlap = _iou(box, candidate)
+        if overlap > score:
+            best, score = candidate, overlap
+
+    if best is None or score < _SNAP_MIN_OVERLAP:
+        return box, False
+    return list(best), True
+
+
+def _iou(a, b) -> float:
+    """Intersection over union — how much two boxes are the same box."""
+    inter = intersection(a, b)
+    union = area(a) + area(b) - inter
+    return inter / union if union > 0 else 0.0
 
 
 # ------------------------------------------------------------------ describing

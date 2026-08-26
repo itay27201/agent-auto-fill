@@ -86,6 +86,21 @@ export function createApi(apiUrl) {
         body: JSON.stringify({ filename, content_type: contentType }),
       });
     },
+    /** Rebuild a catalog entry's boxes by re-reading its stored master.
+     * Returns a session id to poll; nothing is written to the entry until you
+     * adopt it below. The catalog path never consults the schema registry, so
+     * this is the only way an entry defined by an older pipeline gets fixed. */
+    reingestCatalogEntry(cid) {
+      return request(apiUrl, `/catalog/${encodeURIComponent(cid)}/reingest`, { method: "POST" });
+    },
+    /** Publish a rebuilt schema into the entry. Keeps guide.md and any boxes a
+     * person placed by hand. */
+    adoptSchemaFromSession(cid, sessionId) {
+      return request(apiUrl, `/catalog/${encodeURIComponent(cid)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ adopt_schema_from_session: sessionId }),
+      });
+    },
     startFromCatalog(cid) {
       return request(apiUrl, `/catalog/${encodeURIComponent(cid)}/sessions`, { method: "POST" });
     },

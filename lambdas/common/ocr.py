@@ -1,27 +1,40 @@
-"""Textract, for the documents that have no geometry to read.
+"""Textract: the boxes the PDF's own geometry cannot give us, and their labels.
 
-`geometry.py` gets a form's boxes out of the PDF itself — the ruled lines and
-glyph positions are right there, exact and free. That covers every digitally
-produced government form, which is nearly all of them.
+`geometry.py` reconstructs a form's cells from its ruled lines. That is exact
+and free wherever it works, and on the Israeli 101 it reaches about three
+quarters of page one. It cannot reach the rest, for two reasons that no amount
+of tuning fixes: a scan has no lines to read at all, and even on a clean vector
+form a writing area with no ruled box around it leaves nothing to reconstruct.
 
-It cannot cover a scan. A photographed or faxed form is one flat image: no text
-layer, no path objects, nothing to measure. For those, and only those, this
-module asks Textract where the writing areas are.
+So this runs in two situations, neither of which is "every upload":
+
+  a scanned page   no text layer and no paths — OCR is the only source of
+                   geometry there is.
+  define time      while a form is being *defined*: a catalog rebuild or an
+                   explicit re-ingest. Once per document, inherited by every
+                   session that form ever has.
+
+Its regions are unioned with the PDF's rather than replacing them
+(`geometry.merge_regions`), and the PDF wins a tie — a cell reconstructed from
+ruled lines is exact, an OCR box is inferred.
+
+The part worth the money is `textract_label`. Textract does not merely find a
+box; `KEY_VALUE_SET` says which printed label each box belongs to, and that
+link is exactly what cell reconstruction throws away. The model gets a named
+candidate instead of a bare rectangle, and stays free to override it.
 
 Kept separate from `geometry.py` on purpose. That module is pure computation and
 its tests run with no credentials and no network; this one is an AWS call, and
 folding it in would make the geometry suite need a mock to test arithmetic.
 
-Two honest caveats, both of which is why this is the fallback and not the
-default:
+Two honest caveats:
 
   Cost.     AnalyzeDocument with FORMS and TABLES is billed per page, where
-            reading the PDF's own geometry is free.
+            reading the PDF's own geometry is free. Hence the define-time gate.
   Hebrew.   Textract's key/value detection is markedly weaker in Hebrew than in
-            English. On a Hebrew scan expect it to find some boxes and miss
-            others — which is survivable, because a field it misses is left
-            unplaced rather than placed wrongly, and the viewer's box editor is
-            how the rest get placed.
+            English. Expect it to find some boxes and miss others — survivable,
+            because a field it misses is left unplaced rather than placed
+            wrongly, and the viewer's box editor places the rest.
 """
 from __future__ import annotations
 
@@ -94,12 +107,22 @@ def _value_regions(blocks: dict) -> list[dict]:
             # somebody's completed copy, not a blank to write in. Keep it — the
             # box is still correct — but say so, so enrich is not surprised.
             written = _text_of(value, blocks)
-            out.append({
+            region = {
                 "bbox": bbox,
                 "found_by": "textract_value",
                 "nearby_text": ([{"side": "right", "text": label[:60]}] if label else []),
                 **({"already_contains": written[:60]} if written else {}),
-            })
+            }
+            if label:
+                # The reason this whole path is worth its cost. Textract does not
+                # just find a box, it says which printed label the box belongs to
+                # — and that key/value link is precisely what reconstructing
+                # cells from ruled lines cannot recover. Passed to the model as a
+                # named candidate rather than a bare rectangle; it confirms or
+                # overrides it against the page image, so a wrong guess here
+                # costs a hint and never a box.
+                region["textract_label"] = label[:80]
+            out.append(region)
     return out
 
 

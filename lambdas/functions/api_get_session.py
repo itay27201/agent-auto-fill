@@ -36,6 +36,11 @@ def lambda_handler(event, _context):
         # published form — carry official guidance. Sent with the schema so
         # the guide panel costs no extra round trip.
         "guide": cat.load_guide(sess.get("guide_key")),
+        # What ingest saw, so "why is this box wrong" is answerable from the
+        # API instead of by re-running the geometry against the original PDF.
+        # Each page as the model was shown it: every candidate writing area
+        # outlined and numbered.
+        "region_page_urls": [_view_url(k) for k in sess.get("annotated_keys") or []],
     }
 
 

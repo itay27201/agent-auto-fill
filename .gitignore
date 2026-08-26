@@ -8,3 +8,6 @@ __pycache__/
 
 # CDK build output (also ignored in infra/.gitignore)
 cdk.out/
+
+# Personal Claude Code permission overrides (not team-wide)
+.claude/settings.local.json

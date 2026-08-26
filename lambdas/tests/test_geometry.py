@@ -304,6 +304,138 @@ def test_a_stale_catalog_entry_is_flagged_but_never_rebuilt_behind_your_back():
     assert "schema_stale" not in current
 
 
+def test_cells_are_scoped_to_their_row_not_the_whole_page():
+    """Two tables side by side at different heights. Pairing grid lines globally
+    lets the lower table's column boundaries slice the upper table's rows, so the
+    real cells are never even candidates — which is what reconstructed exactly
+    one cell for the whole of page 1 of the 101."""
+    # Upper table: two columns, x 0.1..0.5, y 0.10..0.16
+    # Lower table: three columns at completely different x, y 0.40..0.46
+    hor = [[0.10, 0.10, 0.50, 0.10], [0.10, 0.16, 0.50, 0.16],
+           [0.60, 0.40, 0.95, 0.40], [0.60, 0.46, 0.95, 0.46]]
+    ver = [[0.10, 0.10, 0.10, 0.16], [0.30, 0.10, 0.30, 0.16], [0.50, 0.10, 0.50, 0.16],
+           [0.60, 0.40, 0.60, 0.46], [0.75, 0.40, 0.75, 0.46], [0.95, 0.40, 0.95, 0.46]]
+
+    got = geo.cells(hor, ver)
+    assert len(got) == 4, got
+    for cell in ([0.10, 0.10, 0.30, 0.16], [0.30, 0.10, 0.50, 0.16],
+                 [0.60, 0.40, 0.75, 0.46], [0.75, 0.40, 0.95, 0.46]):
+        assert any(all(abs(a - b) < 1e-3 for a, b in zip(cell, g)) for g in got), cell
+
+
+def test_a_border_drawn_in_segments_still_bounds_a_cell():
+    """Table borders are routinely drawn one segment per cell. Demanding a single
+    rule that spans the whole edge rejects the row."""
+    hor = [[0.10, 0.10, 0.30, 0.10], [0.30, 0.10, 0.50, 0.10],   # top, in two pieces
+           [0.10, 0.16, 0.50, 0.16]]
+    ver = [[0.10, 0.10, 0.10, 0.16], [0.50, 0.10, 0.50, 0.16]]
+    assert len(geo.cells(hor, ver)) == 1
+
+
+def test_near_identical_rules_are_one_grid_line():
+    """A stroke plus a fill edge 0.2pt apart is one border, not two lines with a
+    hairline cell between them."""
+    hor = [[0.1, 0.100, 0.5, 0.100], [0.1, 0.1002, 0.5, 0.1002], [0.1, 0.16, 0.5, 0.16]]
+    ver = [[0.1, 0.10, 0.1, 0.16], [0.5, 0.10, 0.5, 0.16]]
+    got = geo.cells(hor, ver)
+    assert len(got) == 1, got
+    assert got[0][3] - got[0][1] > 0.05, "the real row, not a sliver"
+
+
+def test_a_label_inside_its_own_cell_still_yields_a_writing_area():
+    """Sections א, ב and ו of the 101 print the label in the top corner of the
+    box you write in. Rejecting every cell that contains text loses all of them."""
+    cell = [0.70, 0.10, 0.90, 0.16]
+    label = [{"bbox": [0.71, 0.105, 0.78, 0.118], "text": "שם"}]
+    assert not geo._is_blank(cell, label)
+
+    below = geo._under_label(cell, label)
+    assert below is not None
+    assert below[1] > 0.118, "starts under the label, not on it"
+    assert below[3] == 0.16 and below[0] == 0.70
+
+    # Text running deep into the cell is a paragraph or a filled-in value.
+    deep = [{"bbox": [0.71, 0.105, 0.88, 0.155], "text": "a whole paragraph"}]
+    assert geo._under_label(cell, deep) is None
+
+
+def test_a_label_row_with_its_own_blank_row_beneath_is_not_a_second_box():
+    """The other layout: a header row of labels and empty cells under it. Taking
+    the header's leftover space too would offer two boxes for one field."""
+    label_cell = [0.10, 0.10, 0.30, 0.14]
+    blank_below = [0.10, 0.14, 0.30, 0.20]
+    assert geo._has_box_beneath(label_cell, [blank_below])
+    # ...but not when the empty cell is in a different column.
+    assert not geo._has_box_beneath(label_cell, [[0.60, 0.14, 0.80, 0.20]])
+
+
+def test_snap_takes_a_region_it_clearly_matches_and_nothing_else():
+    """Snapping edges to the nearest rule was measured to make boxes *worse* on
+    a dense form — rules sit closer together than a model's error. Matching a
+    whole region by overlap either finds the right one or leaves the box alone."""
+    regions = [{"bbox": [0.70, 0.10, 0.90, 0.16]}, {"bbox": [0.40, 0.10, 0.60, 0.16]}]
+
+    near = [0.705, 0.104, 0.895, 0.158]
+    out, moved = geo.snap(near, regions)
+    assert moved and out == [0.70, 0.10, 0.90, 0.16]
+
+    # Nothing close enough: returned untouched rather than dragged somewhere.
+    far = [0.10, 0.70, 0.20, 0.74]
+    out, moved = geo.snap(far, regions)
+    assert not moved and out == geo.clamp(far)
+    assert geo.snap([0.1, 0.2, 0.3, 0.4], []) == ([0.1, 0.2, 0.3, 0.4], False)
+
+
+def test_merge_regions_prefers_the_pdf_and_renumbers():
+    """The PDF's geometry is exact where it works; Textract fills the gaps. A
+    tie goes to the PDF, and ids stay contiguous so the numbers drawn on the
+    page image still address every region."""
+    pdf = [{"bbox": [0.70, 0.10, 0.90, 0.16], "found_by": "cell"}]
+    ocr_regions = [
+        {"bbox": [0.705, 0.101, 0.898, 0.159], "found_by": "textract_value"},  # same box
+        {"bbox": [0.10, 0.50, 0.30, 0.56], "found_by": "textract_value",
+         "textract_label": "מספר זהות"},                                       # new
+    ]
+    merged = geo.merge_regions(pdf, ocr_regions)
+    assert len(merged) == 2
+    assert [r["region_id"] for r in merged] == [1, 2]
+    kept = [r for r in merged if r["bbox"] == [0.70, 0.10, 0.90, 0.16]]
+    assert kept and kept[0]["found_by"] == "cell", "the PDF wins the overlap"
+    assert any(r.get("textract_label") == "מספר זהות" for r in merged)
+
+
+def test_the_real_form_reconstructs_its_boxes():
+    """The bar that matters. Everything above is a synthetic page; this is the
+    document that was being filled wrongly.
+
+    Skipped when the PDF is not present, so the suite still runs anywhere.
+    """
+    src = Path(__file__).resolve().parents[2] / "Service_Pages_Income_tax_annual-report-2024_itc101.pdf"
+    if not src.exists():
+        print("     (skipped: the 101 PDF is not in the repo root)")
+        return
+
+    pdf = pdfium.PdfDocument(src.read_bytes())
+    page_one = geo.candidate_regions(pdf[0])
+    # Before this change the same page produced 2. The form has roughly 70
+    # writing areas; anything near the old number means the grid is not being
+    # reconstructed and the model is back to guessing coordinates.
+    assert len(page_one) >= 45, len(page_one)
+
+    kinds = {r["found_by"] for r in page_one}
+    assert "cell" in kinds and "under_label" in kinds, kinds
+
+    # Section א's employer row: four columns near the top, and the name cell is
+    # the one that used to receive the deduction-file number.
+    band = [r for r in page_one if 0.18 < r["bbox"][1] < 0.22]
+    assert len(band) >= 3, band
+    assert any(r["bbox"][2] > 0.90 for r in band), "the rightmost (שם) cell"
+
+    for r in page_one:
+        assert geo.area(r["bbox"]) > 0
+        assert all(0.0 <= v <= 1.0 for v in r["bbox"])
+
+
 def run_all():
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:

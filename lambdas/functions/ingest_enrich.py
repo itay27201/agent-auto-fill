@@ -90,6 +90,7 @@ FLAT_TASK = """This document has no form fields. The page has been scanned for t
 Identify every input a person must complete on THIS PAGE, and give each one the `region_id` of the box it should be written into.
 
 - Read the region id off the image, and check it against the `nearby_text` in the list. A region whose nearby text is the label you have in mind is the right region.
+- Some regions carry a `textract_label`: a form-reader's guess at which printed label that box belongs to. Treat it as a strong hint, not as fact — it is often right and is occasionally attached to the wrong box, so confirm it against the image before you trust it, and ignore it when the image disagrees.
 - On a right-to-left form the label is usually the text to the RIGHT of, or directly ABOVE, the box that belongs to it.
 - Do NOT return coordinates. `region_id` is the only way to place a field.
 - If a person clearly must write somewhere that has no region, set `"region_id": null` and give an approximate `"bbox": [x0, y0, x1, y1]` normalized 0..1 from the top-left instead. Use this sparingly — a field with no box is handled gracefully downstream, a field in the wrong box is not.
@@ -266,13 +267,15 @@ def _slim_regions(regions: list[dict], page_no: int) -> dict:
     around it. Not the coordinates — it has no use for them, they are most of
     the tokens, and a model that can see numbers is a model that can copy one
     into a bbox field it was told not to fill."""
-    return {
-        "page": page_no,
-        "regions": [
-            {"region_id": r["region_id"], "nearby_text": r.get("nearby_text") or []}
-            for r in regions
-        ],
-    }
+    out = []
+    for r in regions:
+        item = {"region_id": r["region_id"], "nearby_text": r.get("nearby_text") or []}
+        if r.get("textract_label"):
+            item["textract_label"] = r["textract_label"]
+        if r.get("already_contains"):
+            item["already_contains"] = r["already_contains"]
+        out.append(item)
+    return {"page": page_no, "regions": out}
 
 
 def _page_content(page_keys: list[str]) -> list[dict]:
@@ -298,6 +301,7 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
     """
     regions = {(p["page"], r["region_id"]): r for p in pages for r in p.get("regions") or []}
     text = {p["page"]: p.get("text") or [] for p in pages}
+    page_regions = {p["page"]: p.get("regions") or [] for p in pages}
     placed: dict[int, list] = {}
     rejected = 0
 
@@ -311,16 +315,30 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
             f["bbox_source"] = "region"
             f["nearby_text"] = region.get("nearby_text") or []
         elif f.get("bbox"):
-            f["bbox"] = geo.clamp(f["bbox"])
-            f["bbox_source"] = "estimated"
+            # No region id, so this is the model's own estimate. If it lands
+            # squarely on a region we did find, it almost certainly meant that
+            # one — take the region's exact geometry instead of the guess. When
+            # nothing matches well the estimate is kept untouched, so this can
+            # only improve a box, never move it somewhere new.
+            snapped, moved = geo.snap(geo.clamp(f["bbox"]), page_regions.get(page, []))
+            f["bbox"] = snapped
+            f["bbox_source"] = "snapped" if moved else "estimated"
         else:
             f["bbox"], f["bbox_source"] = None, "none"
 
         f.pop("region_id", None)
 
-        reason = geo.sanity_check(f["bbox"], text.get(page, []),
+        page_text = text.get(page, [])
+        reason = geo.sanity_check(f["bbox"], page_text,
                                   others=placed.get(page, []),
                                   label=f.get("label", "")) if f.get("bbox") else "no box"
+        # An estimate on a page with no text and no rules cannot be checked by
+        # anything: `sanity_check` has nothing to measure it against, so it would
+        # pass by default and be stamped onto the form. A box nobody can verify
+        # is exactly what the rest of this refuses to draw.
+        if not reason and f["bbox_source"] == "estimated" and not page_text and not regions:
+            reason = "estimated on a page with no geometry to check it against"
+
         if reason:
             rejected += 1
             log.info("unplaced %s (%s): %s", f.get("field_id"), f.get("label"), reason)
@@ -328,7 +346,7 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
             f["bbox_confidence"] = "low"
             f["bbox_note"] = reason
         else:
-            f["bbox_confidence"] = "ok" if f["bbox_source"] == "region" else "estimated"
+            f["bbox_confidence"] = "ok" if f["bbox_source"] in ("region", "snapped") else "estimated"
             placed.setdefault(page, []).append(f["bbox"])
 
         f.setdefault("backend", {"kind": "overlay"})

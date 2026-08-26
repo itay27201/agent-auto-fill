@@ -52,18 +52,32 @@ def lambda_handler(event, _context):
     # carries exact widget rects, and a cache hit is reusing a schema whose
     # geometry was settled the first time round.
     scan = not event.get("cache_hit") and doc_type != "pdf_acroform"
-    page_keys, annotated_keys, pages = _rasterize(sid, body, scan=scan)
+    # Set when a form is being defined rather than merely filled — a catalog
+    # rebuild, or an explicit re-ingest. It buys a Textract pass per page, which
+    # is worth paying once for a document every later session inherits and not
+    # worth paying on an ordinary upload.
+    define_time = bool(event.get("define_time"))
+    page_keys, annotated_keys, pages = _rasterize(sid, body, scan=scan,
+                                                  define_time=define_time)
 
     out = {**event, "candidates": candidates, "page_keys": page_keys}
+    scanned = {}
     if scan:
         # Written to S3 rather than carried on the event: Step Functions caps
         # state at 256KB and a dense form's region table goes straight past it.
         out["regions_key"] = _put_json(f"derived/{sid}/regions.json", pages)
         out["annotated_keys"] = annotated_keys
+        # Recorded on the session too, not just passed down the pipeline. When a
+        # form comes out wrong the first question is "what did ingest actually
+        # see", and answering it used to mean having the PDF and running the
+        # geometry by hand. These make it one GET.
+        scanned = {"annotated_keys": annotated_keys,
+                   "region_count": sum(len(p["regions"]) for p in pages)}
         log.info("scanned %d candidate regions over %d pages",
-                 sum(len(p["regions"]) for p in pages), len(pages))
+                 scanned["region_count"], len(pages))
 
-    update_session(sid, page_keys=page_keys, page_count=len(page_keys), progress="enriching")
+    update_session(sid, page_keys=page_keys, page_count=len(page_keys),
+                   progress="enriching", **scanned)
     log.info("extracted %d candidates over %d pages", len(candidates), len(page_keys))
     return out
 
@@ -177,7 +191,8 @@ def _slug(name: str) -> str:
 
 # ----------------------------------------------------------------- rasterize
 
-def _rasterize(sid: str, body: bytes, scan: bool = False) -> tuple[list[str], list[str], list[dict]]:
+def _rasterize(sid: str, body: bytes, scan: bool = False,
+               define_time: bool = False) -> tuple[list[str], list[str], list[dict]]:
     """Page images for the viewer, and — when `scan` — the page geometry and a
     numbered copy of each image for the vision pass.
 
@@ -216,14 +231,22 @@ def _rasterize(sid: str, body: bytes, scan: bool = False) -> tuple[list[str], li
             log.exception("geometry scan failed on page %d", i + 1)
             regions, text = [], []
 
-        # No text and no boxes means there is nothing in the file to read: the
-        # page is a scan or a photograph. That, and only that, is worth paying
-        # Textract for — a digitally produced form already told us everything
-        # for free, and asking anyway would bill every upload for an answer we
-        # have.
-        if not text and not regions:
-            log.info("page %d has no text layer; falling back to OCR", i + 1)
-            regions = ocr.regions_from_image(png)
+        # Textract runs in two situations, and neither is "every upload".
+        #
+        # A page with no text and no rules is a scan: there is nothing in the
+        # file to read, so OCR is the only source of geometry there is.
+        #
+        # Otherwise it runs only while a form is being *defined* — the tier that
+        # happens once per document and is inherited by every session after it.
+        # Reconstructing cells from rules covers most of a form but not all of
+        # it, and Textract's key/value pairs reach the ones it misses; paying a
+        # few cents once to place a box correctly for every future filling of
+        # that form is the trade this whole pipeline is built around.
+        scanned = not text and not regions
+        if scanned or define_time:
+            log.info("page %d: running Textract (%s)", i + 1,
+                     "no text layer" if scanned else "define-time pass")
+            regions = geo.merge_regions(regions, ocr.regions_from_image(png))
 
         pages.append({"page": i + 1, "regions": regions, "text": text})
         annotated.append(_put_png(f"derived/{sid}/page-{i + 1:03d}-regions.png",

@@ -448,6 +448,44 @@ Resources:
           Type: Api
           Properties: { RestApiId: !Ref Api, Path: "/catalog/{catalog_id}/sessions", Method: POST }
 
+  # Rebuild a catalog entry's boxes by re-reading its stored master. Needed
+  # because the catalog path never consults the schema registry, so the
+  # SCHEMA_VERSION invalidation that re-ingests a stale registry entry cannot
+  # reach an entry -- and before this there was no way to rebuild one at all.
+  # Writes the master into DocsBucket (the state machine reads from there) and
+  # starts the ordinary ingest pipeline rather than a second one.
+  CatalogReingestFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_catalog_reingest.lambda_handler
+      Timeout: 60
+      Environment:
+        Variables:
+          DOCS_BUCKET: !Ref DocsBucket
+          ARTIFACTS_BUCKET: !Ref ArtifactsBucket
+          INGEST_STATE_MACHINE_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:agent-auto-fill-ingest-${Stage}"
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }
+        - S3CrudPolicy: { BucketName: !Ref DocsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - KMSEncryptPolicy: { KeyId: !Ref Key }
+        # CopyObject into an SSE-KMS bucket needs GenerateDataKey for the new
+        # object's data key -- Encrypt alone is a 403, confirmed live before.
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
+        - Statement:
+            - Effect: Allow
+              Action: states:StartExecution
+              Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:agent-auto-fill-ingest-${Stage}"
+      Events:
+        Post:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/catalog/{catalog_id}/reingest", Method: POST }
+
   # ----------------------------------------------------------------- ingest
   OnUploadFn:
     Type: AWS::Serverless::Function

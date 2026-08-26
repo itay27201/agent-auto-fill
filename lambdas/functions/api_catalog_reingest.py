@@ -45,7 +45,15 @@ def lambda_handler(event, _context):
 
     sid = uuid.uuid4().hex
     filename = source_key.rsplit("/", 1)[-1]
-    doc_key = f"uploads/{sid}/{filename}"
+    # NOT uploads/{sid}/... — that prefix is DocsBucket's S3 notification
+    # filter, and writing under it makes on_upload start a SECOND state-machine
+    # execution alongside the one this handler starts explicitly. Two pipelines
+    # then race on the same session, overwriting regions.json and schema.json
+    # under each other mid-flight; which finalize wins is a coin toss, and only
+    # one of the two runs carries define_time. Observed live: executions
+    # {sid}-reingest and {sid}-<eventTime> two seconds apart. A prefix the
+    # trigger does not watch makes this handler the only starter.
+    doc_key = f"reingest/{sid}/{filename}"
 
     # The state machine reads the document from DocsBucket. The master is in
     # ArtifactsBucket, because DocsBucket expires its whole contents after seven

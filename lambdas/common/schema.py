@@ -8,11 +8,27 @@ stamps values back using `backend`.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
 from dataclasses import asdict, dataclass, field as dc_field
 from typing import Any
 
+log = logging.getLogger(__name__)
+
 FIELD_TYPES = {"text", "textarea", "number", "date", "select", "multiselect", "checkbox", "signature"}
+
+# The ingest model is given the enum above and mostly returns one of it, but it
+# reaches for these instead often enough to matter. Falling back to "text" for them
+# is how a tick square silently becomes a text field: `validate_value` then accepts
+# "כן" where it would have demanded a boolean, and the renderer writes that word
+# into a box a few points across.
+_TYPE_ALIASES = {
+    "radio": "checkbox", "radio_group": "checkbox", "radio_button": "checkbox",
+    "boolean": "checkbox", "bool": "checkbox", "yes_no": "checkbox",
+    "check": "checkbox", "tick": "checkbox", "checkbox_group": "multiselect",
+    "dropdown": "select", "choice": "select", "single_select": "select",
+    "multi_select": "multiselect", "multiple_select": "multiselect",
+}
 
 
 @dataclass
@@ -58,9 +74,24 @@ class FormField:
     def from_dict(cls, d: dict) -> "FormField":
         known = {k: v for k, v in d.items() if k in cls.__annotations__}
         known.setdefault("field_id", d.get("id", ""))
-        if known.get("type") not in FIELD_TYPES:
-            known["type"] = "text"
+        known["type"] = _canonical_type(known.get("type"))
         return cls(**known)
+
+
+def _canonical_type(raw: Any) -> str:
+    """One of `FIELD_TYPES`, mapping the near-misses rather than flattening them.
+
+    Anything still unrecognized falls back to "text", but says so: a type nobody
+    noticed being rewritten is a field that renders as a string wherever it lands.
+    """
+    name = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if name in FIELD_TYPES:
+        return name
+    if name in _TYPE_ALIASES:
+        return _TYPE_ALIASES[name]
+    if name:
+        log.warning("unknown field type %r — treating it as text", raw)
+    return "text"
 
 
 def schema_from_list(items: list[dict]) -> list[FormField]:
@@ -111,7 +142,10 @@ def validate_value(f: FormField, raw: Any) -> str | None:
 
     if f.type == "checkbox":
         if not isinstance(raw, bool):
-            return f"{f.label} must be true or false"
+            # Naming the value and the fix lets the model correct itself in the
+            # same turn, the way `_wrong_field` does for a mislabelled write.
+            return (f"{f.label} is a tick box: send true to mark it or false to "
+                    f"leave it blank, not {raw!r}.")
         return None
 
     if f.type == "multiselect":

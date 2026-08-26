@@ -213,6 +213,40 @@ def test_read_guide_is_not_offered_when_the_form_has_no_guide():
     assert "read_guide" in names(tools.config_for(gd.parse("## Overview\n\nx\n")))
 
 
+def test_a_near_miss_type_is_mapped_rather_than_flattened_to_text():
+    """The ingest model is given the enum but reaches for these instead often
+    enough to matter, and silently rewriting them to "text" is how a tick square
+    becomes a text field: validate_value then accepts "כן" where it would have
+    demanded a boolean, and the renderer writes that word into the square."""
+    for raw in ("radio", "boolean", "yes_no", "Radio-Group", "tick"):
+        assert sch.FormField.from_dict({"field_id": "f", "label": "l",
+                                        "type": raw}).type == "checkbox", raw
+
+    assert sch.FormField.from_dict({"field_id": "f", "label": "l",
+                                    "type": "dropdown"}).type == "select"
+    assert sch.FormField.from_dict({"field_id": "f", "label": "l",
+                                    "type": "multi_select"}).type == "multiselect"
+
+    # Anything genuinely unrecognized still falls back, and the enum is untouched.
+    assert sch.FormField.from_dict({"field_id": "f", "label": "l",
+                                    "type": "sonnet"}).type == "text"
+    assert sch.FormField.from_dict({"field_id": "f", "label": "l"}).type == "text"
+    assert sch.FormField.from_dict({"field_id": "f", "label": "l",
+                                    "type": "signature"}).type == "signature"
+
+
+def test_a_checkbox_refuses_a_word_and_says_what_to_send_instead():
+    """The agent reaching for "כן" is the mistake this catches, and the message has
+    to be actionable enough to correct inside the same turn."""
+    box = _field(type="checkbox", label="בן/בת זוג עובד/ת", required=False)
+
+    assert sch.validate_value(box, True) is None
+    assert sch.validate_value(box, False) is None
+
+    err = sch.validate_value(box, "כן")
+    assert err and "true" in err and "כן" in err
+
+
 def run_all():
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:

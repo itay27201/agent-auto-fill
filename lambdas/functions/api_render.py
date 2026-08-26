@@ -242,8 +242,13 @@ def _draw_field(c, f, value, page_w, page_h, font):
     size = float((f.backend or {}).get("font_size") or min(11.0, max(7.0, (top - bottom) * 0.62)))
     baseline = bottom + (top - bottom - size) / 2 + size * 0.18
 
-    if f.type == "checkbox":
-        if value:
+    # `backend.mark` comes from the page's own content stream — the geometry pass
+    # recognized this box as one of the form's printed tick squares. That outranks
+    # `type`, which is the ingest model's opinion and is sometimes "text" on a box
+    # a few points across. Writing a string into one of those is illegible ink laid
+    # over the form's own printing; an X or a blank are both strictly better.
+    if f.type == "checkbox" or (f.backend or {}).get("mark") == "checkbox":
+        if _is_ticked(f, value):
             _draw_tick(c, f.bbox, page_w, page_h)
         return
 
@@ -293,6 +298,43 @@ def _draw_choice(c, f, value, options, page_w, page_h):
     if not hit:
         log.warning("%s: %r is not one of the printed choices — not stamped",
                     f.field_id, value)
+
+
+# Words that mean "not this one". A checkbox field should hold a boolean, but a
+# mistyped one reaches the renderer holding whatever the agent wrote — and on these
+# forms that is as often "לא" as "false".
+_NEGATIVE = {"לא", "no", "false", "0", "off", "none", "n"}
+
+
+def _is_ticked(f, value) -> bool:
+    """Whether this square gets an X.
+
+    A boolean answers itself. A string is a field that was typed wrong upstream:
+    the value still carries the person's answer, so read it rather than discard it,
+    but say so in the log — this is the only place a mistyped tick square surfaces.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, list):
+        value = ", ".join(str(x) for x in value)
+
+    text = str(value).strip()
+    if not text:
+        return False
+
+    ticked = _squash(text).lower() not in _NEGATIVE
+    log.warning("%s: tick square holds %r, not a boolean — %s. The field is typed "
+                "%r and should be checkbox.",
+                f.field_id, value, "stamping X" if ticked else "leaving it blank", f.type)
+    return ticked
+
+
+def _squash(text: str) -> str:
+    """Letters and digits only — what the form prints around a word is not part of
+    the word. Mirrors `ingest_enrich._squash`."""
+    return "".join(ch for ch in (text or "") if ch.isalnum())
 
 
 def _draw_tick(c, bbox, page_w, page_h):

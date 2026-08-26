@@ -38,6 +38,17 @@ _SOURCE_PROP = {
     ),
 }
 
+_VALUE_PROP = {
+    "type": ["string", "number", "boolean", "array"],
+    "description": (
+        "Match the field's type. A checkbox takes true or false — the booleans, "
+        "never the words \"כן\", \"yes\" or \"X\"; the form's own tick mark is "
+        "drawn for you. A select takes one of its options copied exactly; a "
+        "multiselect takes an array of them. Everything else takes a string or "
+        "number."
+    ),
+}
+
 TOOL_SPECS = [
     {
         "toolSpec": {
@@ -77,9 +88,7 @@ TOOL_SPECS = [
                 "type": "object",
                 "properties": {
                     "field_id": {"type": "string"},
-                    "value": {
-                        "description": "String, number, boolean for checkboxes, or array for multiselect."
-                    },
+                    "value": _VALUE_PROP,
                     "field_label": _LABEL_PROP,
                     "source": _SOURCE_PROP,
                     "evidence": {
@@ -104,7 +113,7 @@ TOOL_SPECS = [
                             "type": "object",
                             "properties": {
                                 "field_id": {"type": "string"},
-                                "value": {},
+                                "value": _VALUE_PROP,
                                 "field_label": _LABEL_PROP,
                                 "source": _SOURCE_PROP,
                                 "evidence": {"type": "string"},

@@ -1,0 +1,639 @@
+{
+  "form_id": "itc101",
+  "schema_version": "1.0.0",
+  "status": "CONFIRMED (partial — 10 of ~135 candidates promoted)",
+  "source_pdf": "itc101.pdf",
+  "pdf_sha256": "a5bfa867340f6569fb4e7d98e83a421e362f5c4b5ecf32037d6b51869913f8ad",
+  "direction": "rtl",
+  "pages": 2,
+  "page_size": [
+    595.28,
+    841.89
+  ],
+  "coordinate_system": "pdf points, origin top-left (PyMuPDF convention)",
+  "groups": [
+    {
+      "id": "gender",
+      "kind": "radio",
+      "label_he": "מין",
+      "page": 0,
+      "members": [
+        "gender__male",
+        "gender__female"
+      ],
+      "bbox": [
+        524.37,
+        275.14,
+        540.75,
+        307.14
+      ]
+    },
+    {
+      "id": "israel_resident",
+      "kind": "radio",
+      "label_he": "תושב ישראל",
+      "page": 0,
+      "members": [
+        "israel_resident__yes",
+        "israel_resident__no"
+      ],
+      "bbox": [
+        305.72,
+        274.9,
+        322.1,
+        306.9
+      ]
+    },
+    {
+      "id": "marital_status",
+      "kind": "radio",
+      "label_he": "מצב משפחתי",
+      "page": 0,
+      "members": [
+        "marital_status__single",
+        "marital_status__married",
+        "marital_status__divorced",
+        "marital_status__widowed",
+        "marital_status__separated"
+      ],
+      "bbox": [
+        358.92,
+        273.91,
+        501.73,
+        305.91
+      ]
+    }
+  ],
+  "fields": [
+    {
+      "id": "tax_year",
+      "label_he": "שנת המס",
+      "section": "",
+      "page": 0,
+      "type": "comb",
+      "validator": "tax_year",
+      "cells": 4,
+      "fill_direction": "ltr",
+      "cell_boxes": [
+        [
+          220.42,
+          91.0,
+          236.64,
+          99.0
+        ],
+        [
+          236.64,
+          91.0,
+          252.86,
+          99.0
+        ],
+        [
+          252.86,
+          91.0,
+          269.08,
+          99.0
+        ],
+        [
+          269.08,
+          91.0,
+          285.3,
+          99.0
+        ]
+      ],
+      "bbox": [
+        220.42,
+        91.0,
+        285.3,
+        99.0
+      ],
+      "source_candidate": "p0_comb_000"
+    },
+    {
+      "id": "employer_tax_file",
+      "label_he": "מספר תיק ניכויים",
+      "section": "",
+      "page": 0,
+      "type": "comb",
+      "validator": "tax_file_number",
+      "cells": 9,
+      "fill_direction": "ltr",
+      "cell_boxes": [
+        [
+          28.59,
+          172.0,
+          39.89,
+          183.0
+        ],
+        [
+          39.89,
+          172.0,
+          51.19,
+          183.0
+        ],
+        [
+          51.19,
+          172.0,
+          62.49,
+          183.0
+        ],
+        [
+          62.49,
+          172.0,
+          73.79,
+          183.0
+        ],
+        [
+          73.79,
+          172.0,
+          85.09,
+          183.0
+        ],
+        [
+          85.09,
+          172.0,
+          96.39,
+          183.0
+        ],
+        [
+          96.39,
+          172.0,
+          107.69,
+          183.0
+        ],
+        [
+          107.69,
+          172.0,
+          118.99,
+          183.0
+        ],
+        [
+          118.99,
+          172.0,
+          130.29,
+          183.0
+        ]
+      ],
+      "bbox": [
+        28.59,
+        172.0,
+        130.29,
+        183.0
+      ],
+      "source_candidate": "p0_comb_001"
+    },
+    {
+      "id": "employee_id",
+      "label_he": "מספר זהות של העובד/ת",
+      "section": "",
+      "page": 0,
+      "type": "comb",
+      "validator": "israeli_id",
+      "cells": 9,
+      "fill_direction": "ltr",
+      "cell_boxes": [
+        [
+          438.1,
+          220.0,
+          449.45,
+          236.0
+        ],
+        [
+          449.45,
+          220.0,
+          460.8,
+          236.0
+        ],
+        [
+          460.8,
+          220.0,
+          472.15,
+          236.0
+        ],
+        [
+          472.15,
+          220.0,
+          483.5,
+          236.0
+        ],
+        [
+          483.5,
+          220.0,
+          494.85,
+          236.0
+        ],
+        [
+          494.85,
+          220.0,
+          506.2,
+          236.0
+        ],
+        [
+          506.2,
+          220.0,
+          517.55,
+          236.0
+        ],
+        [
+          517.55,
+          220.0,
+          528.9,
+          236.0
+        ],
+        [
+          528.9,
+          220.0,
+          540.25,
+          236.0
+        ]
+      ],
+      "bbox": [
+        438.1,
+        220.0,
+        540.25,
+        236.0
+      ],
+      "source_candidate": "p0_comb_002"
+    },
+    {
+      "id": "employee_birth_date",
+      "label_he": "תאריך לידה",
+      "section": "",
+      "page": 0,
+      "type": "comb",
+      "validator": "date_ddmmyy",
+      "cells": 6,
+      "fill_direction": "ltr",
+      "cell_boxes": [
+        [
+          141.9,
+          221.0,
+          153.3,
+          236.0
+        ],
+        [
+          153.3,
+          221.0,
+          164.7,
+          236.0
+        ],
+        [
+          164.7,
+          221.0,
+          176.1,
+          236.0
+        ],
+        [
+          176.1,
+          221.0,
+          187.5,
+          236.0
+        ],
+        [
+          187.5,
+          221.0,
+          198.9,
+          236.0
+        ],
+        [
+          198.9,
+          221.0,
+          210.3,
+          236.0
+        ]
+      ],
+      "bbox": [
+        141.9,
+        221.0,
+        210.3,
+        236.0
+      ],
+      "source_candidate": "p0_comb_004"
+    },
+    {
+      "id": "employee_aliya_date",
+      "label_he": "תאריך עליה",
+      "section": "",
+      "page": 0,
+      "type": "comb",
+      "validator": "date_ddmmyy",
+      "cells": 6,
+      "fill_direction": "ltr",
+      "cell_boxes": [
+        [
+          50.91,
+          221.0,
+          62.31,
+          236.0
+        ],
+        [
+          62.31,
+          221.0,
+          73.71,
+          236.0
+        ],
+        [
+          73.71,
+          221.0,
+          85.11,
+          236.0
+        ],
+        [
+          85.11,
+          221.0,
+          96.51,
+          236.0
+        ],
+        [
+          96.51,
+          221.0,
+          107.91,
+          236.0
+        ],
+        [
+          107.91,
+          221.0,
+          119.31,
+          236.0
+        ]
+      ],
+      "bbox": [
+        50.91,
+        221.0,
+        119.31,
+        236.0
+      ],
+      "source_candidate": "p0_comb_003"
+    },
+    {
+      "id": "employee_last_name",
+      "label_he": "שם משפחה",
+      "page": 0,
+      "type": "text",
+      "validator": "text",
+      "align": "right",
+      "bbox": [
+        313.9,
+        219.0,
+        438.1,
+        234.0
+      ]
+    },
+    {
+      "id": "employee_first_name",
+      "label_he": "שם פרטי",
+      "page": 0,
+      "type": "text",
+      "validator": "text",
+      "align": "right",
+      "bbox": [
+        210.0,
+        219.0,
+        313.9,
+        234.0
+      ]
+    },
+    {
+      "id": "gender__male",
+      "label_he": "זכר",
+      "page": 0,
+      "type": "radio_option",
+      "group": "gender",
+      "value": "male",
+      "mark_bbox": [
+        528.37,
+        279.14,
+        536.75,
+        290.14
+      ],
+      "mark_style": "X",
+      "group_bbox": [
+        524.37,
+        275.14,
+        540.75,
+        307.14
+      ],
+      "bbox": [
+        528.37,
+        279.14,
+        536.75,
+        290.14
+      ]
+    },
+    {
+      "id": "gender__female",
+      "label_he": "נקבה",
+      "page": 0,
+      "type": "radio_option",
+      "group": "gender",
+      "value": "female",
+      "mark_bbox": [
+        528.37,
+        292.14,
+        536.75,
+        303.14
+      ],
+      "mark_style": "X",
+      "group_bbox": [
+        524.37,
+        275.14,
+        540.75,
+        307.14
+      ],
+      "bbox": [
+        528.37,
+        292.14,
+        536.75,
+        303.14
+      ]
+    },
+    {
+      "id": "israel_resident__yes",
+      "label_he": "כן",
+      "page": 0,
+      "type": "radio_option",
+      "group": "israel_resident",
+      "value": "yes",
+      "mark_bbox": [
+        309.72,
+        278.9,
+        318.1,
+        289.9
+      ],
+      "mark_style": "X",
+      "group_bbox": [
+        305.72,
+        274.9,
+        322.1,
+        306.9
+      ],
+      "bbox": [
+        309.72,
+        278.9,
+        318.1,
+        289.9
+      ]
+    },
+    {
+      "id": "israel_resident__no",
+      "label_he": "לא",
+      "page": 0,
+      "type": "radio_option",
+      "group": "israel_resident",
+      "value": "no",
+      "mark_bbox": [
+        309.72,
+        291.9,
+        318.1,
+        302.9
+      ],
+      "mark_style": "X",
+      "group_bbox": [
+        305.72,
+        274.9,
+        322.1,
+        306.9
+      ],
+      "bbox": [
+        309.72,
+        291.9,
+        318.1,
+        302.9
+      ]
+    },
+    {
+      "id": "marital_status__single",
+      "label_he": "רווק/ה",
+      "page": 0,
+      "type": "radio_option",
+      "group": "marital_status",
+      "value": "single",
+      "mark_bbox": [
+        489.34,
+        277.91,
+        497.73,
+        288.91
+      ],
+      "mark_style": "X",
+      "group_bbox": [
+        358.92,
+        273.91,
+        501.73,
+        305.91
+      ],
+      "bbox": [
+        489.34,
+        277.91,
+        497.73,
+        288.91
+      ]
+    },
+    {
+      "id": "marital_status__married",
+      "label_he": "נשוי/אה",
+      "page": 0,
+      "type": "radio_option",
+      "group": "marital_status",
+      "value": "married",
+      "mark_bbox": [
+        430.19,
+        277.91,
+        438.57,
+        288.91
+      ],
+      "mark_style": "X",
+      "group_bbox": [
+        358.92,
+        273.91,
+        501.73,
+        305.91
+      ],
+      "bbox": [
+        430.19,
+        277.91,
+        438.57,
+        288.91
+      ]
+    },
+    {
+      "id": "marital_status__divorced",
+      "label_he": "גרוש/ה",
+      "page": 0,
+      "type": "radio_option",
+      "group": "marital_status",
+      "value": "divorced",
+      "mark_bbox": [
+        362.92,
+        277.91,
+        371.3,
+        288.91
+      ],
+      "mark_style": "X",
+      "group_bbox": [
+        358.92,
+        273.91,
+        501.73,
+        305.91
+      ],
+      "bbox": [
+        362.92,
+        277.91,
+        371.3,
+        288.91
+      ]
+    },
+    {
+      "id": "marital_status__widowed",
+      "label_he": "אלמן/ה",
+      "page": 0,
+      "type": "radio_option",
+      "group": "marital_status",
+      "value": "widowed",
+      "mark_bbox": [
+        489.34,
+        290.91,
+        497.72,
+        301.91
+      ],
+      "mark_style": "X",
+      "group_bbox": [
+        358.92,
+        273.91,
+        501.73,
+        305.91
+      ],
+      "bbox": [
+        489.34,
+        290.91,
+        497.72,
+        301.91
+      ]
+    },
+    {
+      "id": "marital_status__separated",
+      "label_he": "פרוד/ה",
+      "page": 0,
+      "type": "radio_option",
+      "group": "marital_status",
+      "value": "separated",
+      "mark_bbox": [
+        442.49,
+        290.91,
+        450.88,
+        301.91
+      ],
+      "mark_style": "X",
+      "group_bbox": [
+        358.92,
+        273.91,
+        501.73,
+        305.91
+      ],
+      "bbox": [
+        442.49,
+        290.91,
+        450.88,
+        301.91
+      ]
+    }
+  ]
+}

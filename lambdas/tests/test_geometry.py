@@ -618,6 +618,84 @@ def test_a_select_gets_one_box_per_printed_choice():
     assert "choices" in placed[0]["bbox_note"], placed[0]["bbox_note"]
 
 
+def _tick(x, label, y=0.332):
+    return {"bbox": [x, y, x + 0.013, y + 0.009], "found_by": "checkbox",
+            "is_checkbox": True, "region_id": int(x * 1000) + int(y * 10),
+            "nearby_text": [{"side": "left", "text": label}]}
+
+
+def test_a_tick_square_the_model_called_text_is_still_a_tick_square():
+    """`is_checkbox` comes off the page's own content stream; `type` is the ingest
+    model's opinion. When the two disagree the page wins — otherwise the renderer
+    has no signal and writes the value as a string into a box a few points wide,
+    which is the whole failure."""
+    regions = [_tick(0.72, "בן/בת זוג עובד/ת")]
+    pages = [{"page": 1, "text": [], "regions": regions}]
+
+    field = {"field_id": "spouse_works", "label": "בן/בת זוג עובד/ת",
+             "type": "text", "page": 1, "region_id": regions[0]["region_id"]}
+    placed = _place([field], pages)[0]
+
+    assert placed["type"] == "checkbox", "a printed square is not a text field"
+    assert placed["backend"]["mark"] == "checkbox"
+    assert placed["bbox_confidence"] == "ok"
+
+
+def test_a_mistyped_tick_square_carrying_choices_is_read_as_a_choice():
+    """Same coercion, but the model also returned options — so this is a printed
+    choice, and it needs one box per option rather than a single tick."""
+    regions = [_tick(0.72, "נשוי/אה"), _tick(0.61, "רווק/ה")]
+    pages = [{"page": 1, "text": [], "regions": regions}]
+
+    field = {"field_id": "marital", "label": "מצב משפחתי", "type": "date",
+             "page": 1, "region_id": regions[0]["region_id"],
+             "options": ["רווק/ה", "נשוי/אה"]}
+    placed = _place([field], pages)[0]
+
+    assert placed["type"] == "select"
+    boxes = placed["backend"]["option_boxes"]
+    assert [b["value"] for b in boxes] == ["רווק/ה", "נשוי/אה"]
+    assert boxes[0]["bbox"][0] == 0.61 and boxes[1]["bbox"][0] == 0.72
+
+
+def test_a_select_anchored_beside_the_tick_row_still_finds_its_squares():
+    """The enrich prompt steers mutually exclusive checkboxes toward one `select`,
+    and the model often anchors that select on the wide cell beside the row rather
+    than on a square. `is_checkbox` is then false, so before this every guard was
+    unarmed and the choice was written as text into that cell."""
+    ticks = [_tick(0.72, "נשוי/אה"), _tick(0.61, "גרוש/ה"), _tick(0.83, "רווק/ה")]
+    cell = {"bbox": [0.40, 0.325, 0.90, 0.350], "region_id": 900,
+            "found_by": "cell", "nearby_text": [{"side": "right", "text": "מצב משפחתי"}]}
+    pages = [{"page": 1, "text": [], "regions": ticks + [cell]}]
+
+    field = {"field_id": "marital", "label": "מצב משפחתי", "type": "select",
+             "page": 1, "region_id": 900,
+             "options": ["רווק/ה", "נשוי/אה", "גרוש/ה"]}
+    placed = _place([field], pages)[0]
+
+    boxes = placed["backend"].get("option_boxes")
+    assert boxes, "a select beside the tick row must still map onto the squares"
+    assert [b["value"] for b in boxes] == field["options"]
+    assert placed["backend"]["mark"] == "checkbox"
+
+
+def test_a_select_with_no_tick_squares_is_left_alone():
+    """The widened lookup must not claim an ordinary write-on-a-line select. It is
+    all or nothing, so a page with no squares to match simply yields nothing —
+    and the field keeps its own box and stays a text write."""
+    cell = {"bbox": [0.40, 0.325, 0.90, 0.350], "region_id": 900, "found_by": "cell",
+            "nearby_text": [{"side": "right", "text": "מקצוע"}]}
+    pages = [{"page": 1, "text": [], "regions": [cell]}]
+
+    field = {"field_id": "profession", "label": "מקצוע", "type": "select",
+             "page": 1, "region_id": 900, "options": ["שכיר", "עצמאי"]}
+    placed = _place([field], pages)[0]
+
+    assert "option_boxes" not in placed["backend"]
+    assert placed["backend"].get("mark") != "checkbox"
+    assert placed["bbox_confidence"] == "ok", "an ordinary select must still render"
+
+
 def test_the_real_form_reconstructs_its_boxes():
     """The bar that matters. Everything above is a synthetic page; this is the
     document that was being filled wrongly.

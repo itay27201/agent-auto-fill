@@ -346,18 +346,36 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
         option_boxes = []
         if is_checkbox:
             f["backend"]["mark"] = "checkbox"
-            # A select printed as a row of tick squares needs one box per
-            # choice. A field carries a single bbox, so without this, picking any
-            # option but the one the model anchored on stamps the answer onto the
-            # wrong square — and because the type is "select" rather than
-            # "checkbox", the renderer writes the choice as *text* into a box
-            # nine thousandths of a page wide. The AcroForm path has always had
-            # this as `backend.radio_options`; a printed radio group needs the
-            # same thing.
-            if f.get("type") in ("select", "multiselect"):
-                option_boxes = _option_boxes(f, page_regions.get(page, []))
-                if option_boxes:
-                    f["backend"]["option_boxes"] = option_boxes
+            # The same rule `_reconcile` applies to AcroForm: structure from the
+            # document wins, language from the model wins. The page's own content
+            # stream says this box is a printed tick square, so it takes a mark —
+            # the model does not get a vote on that. Left alone, a square the model
+            # called "text" is stamped with a string a few points wide.
+            if f.get("type") not in ("checkbox", "select", "multiselect"):
+                was = f.get("type")
+                f["type"] = "select" if len(f.get("options") or []) >= 2 else "checkbox"
+                log.info("%s (%s): typed %r on a printed tick square — reading it as %r",
+                         f.get("field_id"), f.get("label"), was, f["type"])
+
+        # A select printed as a row of tick squares needs one box per choice. A
+        # field carries a single bbox, so without this, picking any option but the
+        # one the model anchored on stamps the answer onto the wrong square — and
+        # because the type is "select" rather than "checkbox", the renderer writes
+        # the choice as *text* into a box nine thousandths of a page wide. The
+        # AcroForm path has always had this as `backend.radio_options`; a printed
+        # radio group needs the same thing.
+        #
+        # Attempted whether or not the field anchored on a square: the model often
+        # anchors such a select on the wide cell beside the row instead, which
+        # leaves `is_checkbox` false and every one of these guards unarmed. What
+        # keeps that from claiming an unrelated write-on-a-line select is
+        # `_option_boxes` being all or nothing — every option must find its own
+        # square by label before any of them is used.
+        if f.get("type") in ("select", "multiselect"):
+            option_boxes = _option_boxes(f, page_regions.get(page, []))
+            if option_boxes:
+                f["backend"]["option_boxes"] = option_boxes
+                f["backend"]["mark"] = "checkbox"
 
         page_text = text.get(page, [])
         reason = geo.sanity_check(f["bbox"], page_text,

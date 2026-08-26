@@ -167,6 +167,11 @@ function render() {
 
     for (const f of fieldsByPage.get(pageNo) || []) {
       pageEl.appendChild(fieldBox(f));
+      // A choice printed as a row of tick squares is marked in the square it
+      // chose, which is not the square the field is anchored on. Drawn as
+      // separate elements because the field carries one bbox and this needs one
+      // per chosen option — the same reason api_render.py has _draw_choice.
+      for (const mark of choiceMarks(f)) pageEl.appendChild(mark);
     }
     pageEl.addEventListener("pointerdown", (e) => startDraw(e, pageEl, pageNo));
     container.appendChild(pageEl);
@@ -218,10 +223,73 @@ function fieldBox(f) {
 /** What the renderer would stamp here — see api_render.py's _draw_field. */
 function displayValue(f, value) {
   if (value === null || value === undefined || value === "") return "";
+  // This field's mark goes in one of its printed choice squares, drawn by
+  // choiceMarks. Showing the chosen option's text here as well would put it in
+  // the square the field anchored on, which is the very thing the renderer
+  // stopped doing.
+  if (optionBoxes(f).length) return "";
   // The renderer draws an X; the glyph differs, the placement is the point.
-  if (f.type === "checkbox") return value ? "\u2713" : "";
+  if (f.type === "checkbox" || (f.backend || {}).mark === "checkbox") {
+    return isTicked(value) ? "\u2713" : "";
+  }
   if (Array.isArray(value)) return value.join(", ");
   return String(value);
+}
+
+function optionBoxes(f) {
+  return (f.backend && f.backend.option_boxes) || [];
+}
+
+// Mirrors api_render.py's _NEGATIVE. A tick square should hold a boolean, but a
+// field typed wrong upstream reaches here holding whatever the agent wrote.
+const NEGATIVE = new Set(["\u05dc\u05d0", "no", "false", "0", "off", "none", "n"]);
+
+/** Mirrors api_render.py's _is_ticked, so the preview cannot promise a mark the
+ *  export will not draw. */
+function isTicked(value) {
+  if (typeof value === "boolean") return value;
+  if (value === null || value === undefined) return false;
+  const text = (Array.isArray(value) ? value.join(", ") : String(value)).trim();
+  if (!text) return false;
+  return !NEGATIVE.has(squash(text).toLowerCase());
+}
+
+function squash(text) {
+  return String(text || "").replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+/** A checkmark in each printed square this field's value chose \u2014 the same squares
+ *  api_render.py's _draw_choice stamps, matched the same way. */
+function choiceMarks(f) {
+  const options = optionBoxes(f);
+  if (!showValues || !options.length) return [];
+
+  const value = (state.values[f.field_id] || {}).value;
+  const list = Array.isArray(value) ? value : [value];
+  const chosen = new Set(
+    list.filter((v) => v !== null && v !== undefined && v !== "" && typeof v !== "boolean")
+      .map((v) => String(v).trim())
+  );
+  // A lone square answers true or false rather than naming its own choice.
+  if (value === true && options.length === 1) chosen.add(String(options[0].value));
+  if (!chosen.size) return [];
+
+  const out = [];
+  for (const option of options) {
+    if (!chosen.has(String(option.value).trim())) continue;
+    const bbox = option.bbox && option.bbox.length === 4 ? option.bbox : [0, 0, 0, 0];
+    const [x0, y0, x1, y1] = bbox;
+    const mark = document.createElement("div");
+    mark.className = "choice-mark";
+    mark.title = `${f.label}: ${option.value}`;
+    mark.style.left = `${x0 * 100}%`;
+    mark.style.top = `${y0 * 100}%`;
+    mark.style.width = `${Math.max(0, x1 - x0) * 100}%`;
+    mark.style.height = `${Math.max(0, y1 - y0) * 100}%`;
+    mark.textContent = "\u2713";
+    out.push(mark);
+  }
+  return out;
 }
 
 function valueOverlay(text) {

@@ -440,6 +440,23 @@ a:hover { text-decoration: underline; }
 .field-box[data-type="checkbox"] .field-value { justify-content: center; font-size: 70cqh; }
 .field-box.draft .field-value { color: var(--warn); font-style: italic; }
 
+/* The mark in one of a printed choice's tick squares, positioned on that square
+   rather than on the field's own box — see viewer.js's choiceMarks and
+   api_render.py's _draw_choice. Not interactive: the field is selected by
+   clicking its box, and these sit on top of it. */
+.choice-mark {
+  position: absolute;
+  container-type: size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 11px; /* where container query units are unsupported */
+  font-size: 90cqh;
+  color: #111827;
+  pointer-events: none;
+}
+
 /* Placing mode: drag a box that ingest put in the wrong place, or draw one for
    a field it refused to place at all. Everything is already positioned in
    percentages of .page, so the gesture maths in viewer.js needs no zoom factor

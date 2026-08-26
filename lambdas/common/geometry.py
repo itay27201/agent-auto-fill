@@ -42,6 +42,13 @@ _RULE_THICKNESS = 0.004
 # Two rules within this of each other are the same rule drawn twice, which is
 # extremely common: a table border is often a stroke plus a fill edge.
 _MERGE_TOL = 0.004
+# Whether two drawn lines are the SAME line. A different question from
+# `_MERGE_TOL`'s "do these grid positions cluster", and it needs a much tighter
+# answer: ~1pt rather than ~3.4pt. A duplicate stroke sits hundredths of a point
+# from its twin and still merges, but on the 101 a 3.1pt gap was enough for the
+# instructions frame to absorb the tax-year underline and delete it, leaving
+# `שנת המס` with no region at all.
+_COLLINEAR_TOL = 0.0012
 # A break in a table border smaller than this is a seam between two strokes, not
 # a missing edge. Borders are frequently drawn one segment per cell.
 _COVER_GAP = 0.012

@@ -79,7 +79,11 @@ def test_set_field_writes_as_unconfirmed_agent_draft():
             "source": "user_said", "evidence": "user said 'my family name is Cohen'",
         }, _ctx(store, emitted))
 
-    assert out == {"field_id": "f1", "ok": True, "awaiting_user_confirmation": True}
+    # `value` is echoed because the stored value is not always the one sent: a
+    # date is normalized on the way in, and a model told only "ok" would carry on
+    # believing its own notation was what landed.
+    assert out == {"field_id": "f1", "ok": True, "value": "Cohen",
+                   "awaiting_user_confirmation": True}
     assert store.values["f1"] == {"value": "Cohen", "source": "agent", "confirmed": False}
     assert emitted == [("field_updated", {"field_id": "f1", "value": "Cohen",
                                           "source": "agent", "confirmed": False})]
@@ -245,6 +249,78 @@ def test_a_checkbox_refuses_a_word_and_says_what_to_send_instead():
 
     err = sch.validate_value(box, "כן")
     assert err and "true" in err and "כן" in err
+
+
+def _date_field(**over) -> sch.FormField:
+    """`תאריך לידה` as the 101 actually produces it: eight printed cells, so
+    ingest reads `max_length` off the cell count."""
+    return _field(field_id="employee_birth_date", label="תאריך לידה",
+                  type="date", max_length=8, required=False, **over)
+
+
+def test_a_date_box_of_eight_cells_accepts_a_date():
+    """This field used to accept nothing at all.
+
+    `max_length` counts printed cells; `validate_value` compared it against the
+    raw string, which carries separators the cells do not hold. Every notation in
+    `_DATE_FORMATS` is ten characters, so on an eight-cell box the length check
+    refused all of them while the alternative — eight bare digits — failed the
+    date check instead. The agent bounced between the two messages until it ran
+    out of turns, and the person could not type it by hand either, because
+    `api_set_fields` runs this same function.
+    """
+    # The contradiction, stated rather than implied: nothing that parses fits.
+    import datetime as dt
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%m/%d/%Y"):
+        assert len(dt.date(1996, 2, 26).strftime(fmt)) > 8, fmt
+
+    day = _date_field()
+    for written in ("26.02.1996", "26/02/1996", "1996-02-26", "26021996"):
+        assert sch.validate_value(day, written) is None, written
+
+    # The cap still means something: nine digits is nine cells' worth.
+    assert sch.validate_value(day, "260219966")
+    # ...and it is still counted raw for anything that is not a date, where the
+    # string itself is what gets drawn.
+    assert sch.validate_value(_field(max_length=8), "123456789")
+    assert sch.validate_value(_field(max_length=8), "12345678") is None
+
+
+def test_a_date_is_stored_in_one_shape_whatever_was_typed():
+    """The guard on the fix above.
+
+    `_comb_chars` strips separators and cannot know which end the year is on, so
+    `1996-02-26` was stamped `19960226` into a box whose cells mean DDMMYYYY —
+    a different date, printed on a tax form, with nothing downstream able to tell.
+    It only stayed hidden because the length check happened to reject ISO first.
+    Normalizing on write is what lets that check be relaxed safely.
+    """
+    from functions.api_render import _comb_chars
+
+    day = _date_field()
+    for written in ("26.02.1996", "26/02/1996", "1996-02-26", "26021996"):
+        stored = sch.normalize_value(day, written)
+        assert stored == "26/02/1996", (written, stored)
+        assert _comb_chars(stored, 8) == list("26021996"), written
+
+    # Untouched when it does not parse, so the error still comes from validation,
+    # and untouched for every other type.
+    assert sch.normalize_value(day, "not a date") == "not a date"
+    assert sch.normalize_value(_field(), "1996-02-26") == "1996-02-26"
+
+
+def test_a_date_says_which_format_to_send():
+    """Same contract as the checkbox message: name the shape, echo the value."""
+    err = sch.validate_value(_date_field(), "26 בפברואר 1996")
+    assert err and "DD/MM/YYYY" in err and "26 בפברואר 1996" in err
+
+    # And the shape is discoverable before a write, not only after a rejection —
+    # `validation` is empty on these fields, and `max_length` was in no tool at all.
+    ctx = tools.ToolContext(sid="s1", fields=[_date_field()], actor="tester",
+                            emit=lambda kind, data: None)
+    out = tools.run_tool("explain_field", {"field_id": "employee_birth_date"}, ctx)
+    assert out["expected_format"] == "DD/MM/YYYY"
+    assert out["max_length"] == 8
 
 
 def run_all():

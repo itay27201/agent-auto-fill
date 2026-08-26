@@ -268,12 +268,17 @@ def _write_one(u: dict, ctx: ToolContext) -> dict:
     if err:
         return {"field_id": fid, "ok": False, "error": err}
 
-    store.set_value(ctx.sid, fid, u["value"], source="agent", actor=ctx.actor, confirmed=False)
+    # One stored shape per type, so the renderer is never handed a date whose
+    # notation decides which end the year lands on. The value echoed back is the
+    # normalized one — the model should see what was actually written down.
+    value = sch.normalize_value(f, u["value"])
+    store.set_value(ctx.sid, fid, value, source="agent", actor=ctx.actor, confirmed=False)
     store.append_event(ctx.sid, "agent_fill", actor=ctx.actor, field_id=fid,
                        origin=u["source"], evidence=u["evidence"][:400])
-    ctx.emit("field_updated", {"field_id": fid, "value": u["value"],
+    ctx.emit("field_updated", {"field_id": fid, "value": value,
                                "source": "agent", "confirmed": False})
-    return {"field_id": fid, "ok": True, "awaiting_user_confirmation": True}
+    return {"field_id": fid, "ok": True, "value": value,
+            "awaiting_user_confirmation": True}
 
 
 def _normalize_label(text: str) -> str:
@@ -364,7 +369,13 @@ def _t_explain_field(args: dict, ctx: ToolContext) -> dict:
         "required": f.required,
         "options": f.options,
         "guidance": f.help or "No guidance was captured from the document itself.",
-        "expected_format": f.validation or None,
+        # `validation` is empty on most fields the ingest model produces, so
+        # without the date fallback a date field advertises no shape at all and
+        # the model picks a notation at random. `max_length` was invisible
+        # everywhere — not here, not in `agent_view` — so a write rejected for
+        # length gave the model nothing it could query to find out why.
+        "expected_format": f.validation or ("DD/MM/YYYY" if f.type == "date" else None),
+        "max_length": f.max_length or None,
     }
 
     # Which box, physically. This is the on-demand answer to "is this the same

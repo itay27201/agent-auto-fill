@@ -130,7 +130,18 @@ def agent_view(fields: list[FormField], values: dict[str, dict], only: list[str]
 
 # ------------------------------------------------------------------ validation
 
-_DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%m/%d/%Y")
+# Day-first before month-first, because these are Israeli forms: `03/04/1996` is
+# 3 April. `%d%m%Y` is here because a box printed as eight character cells invites
+# exactly that — someone reading "8 cells" types eight digits, and refusing it
+# while the form asks for it is the confusion this list exists to avoid. It can
+# only ever match a bare 8-digit string, since every other entry needs separators.
+_DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%m/%d/%Y", "%d%m%Y")
+
+# What a date is stored as, whatever was typed. `api_render._comb_chars` says a
+# date "reaches here as 26/02/1996 for eight cells" and strips the separators
+# itself — so this is the shape the renderer already expects, and normalizing to
+# it is what stops an ISO string being stamped into a day/month box year-first.
+_DATE_CANONICAL = "%d/%m/%Y"
 
 
 def validate_value(f: FormField, raw: Any) -> str | None:
@@ -166,10 +177,22 @@ def validate_value(f: FormField, raw: Any) -> str | None:
             return f"{f.label} must be a number"
 
     if f.type == "date" and not _parse_date(value):
-        return f"{f.label} is not a recognizable date"
+        # Same reasoning as the checkbox message above: name the shape and echo
+        # what came in, so the model can fix it without another round trip.
+        return (f"{f.label} is a date: send it as DD/MM/YYYY (for example "
+                f"26/02/1996), not {raw!r}.")
 
-    if f.max_length and len(value) > f.max_length:
-        return f"{f.label} is longer than {f.max_length} characters"
+    if f.max_length:
+        # `max_length` on these forms is a count of printed character cells, but
+        # a date's separators sit *between* the cells rather than in them —
+        # `api_render._comb_chars` drops them for exactly that reason. Measuring
+        # the raw string against a cell count compares two different units, and
+        # on an 8-cell date box it rejected every date there is: every format
+        # `_parse_date` accepts is ten characters long, so the field could not be
+        # filled by the agent or by hand.
+        measured = "".join(ch for ch in value if ch.isalnum()) if f.type == "date" else value
+        if len(measured) > f.max_length:
+            return f"{f.label} is longer than {f.max_length} characters"
 
     if f.validation:
         try:
@@ -189,6 +212,30 @@ def _parse_date(value: str):
         except ValueError:
             continue
     return None
+
+
+def normalize_value(f: FormField, raw: Any) -> Any:
+    """The value as it should be stored, given what the form will do with it.
+
+    Only dates are touched, and only ones that parse. `_DATE_FORMATS` accepts
+    four notations for the same day, and a box printed as character cells keeps
+    whichever one it was handed — so `1996-02-26` reached `_comb_chars`, lost its
+    hyphens, and was stamped `19960226` into a box whose cells mean DDMMYYYY. A
+    silently wrong date on a tax form is worse than a rejected one, and it cannot
+    be caught downstream: by then it is eight digits with nothing to say which
+    end is the year.
+
+    Storing one shape also means two people who type the same day the two obvious
+    ways end up with the same value, and the viewer shows a date rather than a
+    digit run.
+
+    Call it after `validate_value`, never instead of it — an unparseable value is
+    returned untouched so the error still comes from validation.
+    """
+    if f.type != "date":
+        return raw
+    parsed = _parse_date(str(raw).strip()) if raw is not None else None
+    return parsed.strftime(_DATE_CANONICAL) if parsed else raw
 
 
 def validate_all(fields: list[FormField], values: dict[str, dict]) -> dict:

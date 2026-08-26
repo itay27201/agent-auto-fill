@@ -62,8 +62,12 @@ def _apply_one(sid: str, u: dict, fields_by_id: dict, actor: str) -> dict:
         if err:
             return {"field_id": fid, "ok": False, "error": err}
 
+        # Same normalization the agent's writes go through: a date typed here is
+        # stored in the one shape the renderer expects, whichever way it was
+        # entered. Returned so the panel can show what was actually stored.
+        value = sch.normalize_value(f, value)
         set_value(sid, fid, value, source="user", actor=actor,
                   expected_version=expected_version, confirmed=True)
-        return {"field_id": fid, "ok": True}
+        return {"field_id": fid, "ok": True, "value": value}
     except VersionConflict:
         return {"field_id": fid, "ok": False, "error": "version_conflict"}

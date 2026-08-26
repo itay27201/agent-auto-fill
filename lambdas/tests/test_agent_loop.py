@@ -220,6 +220,33 @@ def test_a_normal_tool_turn_still_runs_the_tool_and_feeds_the_result_back():
     assert len(fake.calls[1]["messages"]) == 3
 
 
+def test_a_batch_where_every_write_was_refused_is_not_reported_as_success():
+    """`set_fields` answers with per-item outcomes and its own `rejected` tally,
+    never a top-level `error`. Testing only for `error` meant a batch in which
+    nothing at all was written still sent `tool_end {ok: true}`, so the activity
+    row showed no failure and the person was told fields had been filled that had
+    not been — which is what an unfillable date field looked like from outside.
+    """
+    def refused(_name, _args):
+        return {"results": [{"field_id": "employee_birth_date", "ok": False,
+                             "error": "תאריך לידה is longer than 8 characters"}],
+                "written": 0, "rejected": 1}
+
+    _, rec = _run(FakeBedrock(tool_events("t1", "set_fields", "{}"), text_events("done")),
+                  [{"role": "user", "content": [{"text": "hi"}]}], dispatch=refused)
+    ends = [d for k, d in rec.sent if k == "tool_end"]
+    assert ends and ends[0]["ok"] is False, ends
+
+    # A batch that wrote something is still a success: the call did its job, and
+    # the per-item errors travel back to the model inside the result either way.
+    def partial(_name, _args):
+        return {"results": [], "written": 2, "rejected": 1}
+
+    _, rec = _run(FakeBedrock(tool_events("t1", "set_fields", "{}"), text_events("done")),
+                  [{"role": "user", "content": [{"text": "hi"}]}], dispatch=partial)
+    assert [d for k, d in rec.sent if k == "tool_end"][0]["ok"] is True
+
+
 def test_sanitize_leaves_a_clean_history_alone():
     clean = [
         {"role": "user", "content": [{"text": "a"}]},

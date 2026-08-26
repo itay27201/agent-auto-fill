@@ -62,7 +62,12 @@ export function createActivityLog(logEl) {
     const label = TOOL_LABELS[open.name];
     // Until the first call finishes there is nothing to count, so a fresh row
     // shows the singular "doing it now" phrasing rather than "0".
-    const n = open.done + open.failed;
+    //
+    // Counts successes, not attempts. The plural labels are success verbs, so
+    // adding the failures in made a row of nothing but rejected writes read
+    // "filled 2 fields · 2 failed" — claiming two fills that never happened,
+    // which is exactly what an unfillable field looked like from the outside.
+    const n = open.done;
     let text;
     if (open.total) {
       // A tool reporting its own progress knows the denominator, which is the
@@ -72,6 +77,11 @@ export function createActivityLog(logEl) {
       text = `${many} of ${open.total}`;
     } else if (!label) {
       text = n > 1 ? `used ${open.name} ${n}×` : `using ${open.name}...`;
+    } else if (open.failed) {
+      // With failures on the row the count is worth showing even at zero:
+      // "filled 0 fields · 2 failed" is the honest line, where the singular
+      // "filling a field" would read as still in progress.
+      text = label.many(n);
     } else {
       text = n > 1 ? label.many(n) : label.one;
     }

@@ -197,7 +197,12 @@ def run_turn(
             tu = block["toolUse"]
             send("tool_start", {"name": tu["name"]})
             out = dispatch(tu["name"], tu.get("input") or {})
-            failed = isinstance(out, dict) and bool(out.get("error"))
+            # `set_fields` reports each write's outcome under `results` with its
+            # own `rejected` tally, and never a top-level `error` — so a batch in
+            # which every single write was refused used to arrive here as a
+            # success, and the activity row showed no failure at all.
+            failed = isinstance(out, dict) and bool(
+                out.get("error") or (out.get("rejected") and not out.get("written")))
             # Paired with tool_start so the client counts calls that actually
             # finished. A model mid-batch has already emitted every tool_start
             # for that turn, so counting those would run the progress display

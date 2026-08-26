@@ -15,7 +15,16 @@
 // turns every box into something you can drag, and gives the ones ingest
 // declined somewhere to be drawn.
 
-import { state, onChange, notify, toggleSelected, applyBoxUpdate, setPlacing } from "./state.js";
+import {
+  state,
+  onChange,
+  notify,
+  toggleSelected,
+  applyBoxUpdate,
+  setPlacing,
+  unplacedFields,
+  isUnplaced,
+} from "./state.js";
 
 const SHOW_VALUES_KEY = "fa.showValues";
 const MIN_SIZE = 0.004;   // below this a drag was a click, not a box
@@ -30,6 +39,7 @@ let onPlaced;      // told what moved, so the panel and status can react
 let showValues = loadShowValues();
 let measureQueued = false;
 let drag = null;   // the gesture in flight; suppresses re-render mid-drag
+let justWritten = new Set();   // fields to animate on the next render — see markWritten
 
 export function initViewer(el, apiClient, placedCallback) {
   pane = el;
@@ -47,14 +57,29 @@ export function initViewer(el, apiClient, placedCallback) {
   onChange(render);
 }
 
-export function highlightField(fieldId) {
+/** Scroll a field into view and pulse it. `block` is the caller's intent: an
+ * agent pointing at something centres it, while a write asks for `nearest`,
+ * which does not scroll at all when the box is already visible. */
+export function highlightField(fieldId, { block = "center" } = {}) {
   const box = container?.querySelector(`.field-box[data-field-id="${cssEscape(fieldId)}"]`);
   if (!box) return;
-  box.scrollIntoView({ behavior: "smooth", block: "center" });
+  box.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block });
   box.classList.remove("pulse");
   // Force reflow so the animation restarts if the field was just highlighted.
   void box.offsetWidth;
   box.classList.add("pulse");
+}
+
+/** Name the fields whose values are about to change, so the next render can
+ * animate those boxes and no others. The store notifies straight after, and
+ * render() consumes the set as it rebuilds — a box that was already on screen
+ * unchanged must not flash just because something else was written. */
+export function markWritten(fieldIds) {
+  for (const id of fieldIds) justWritten.add(id);
+}
+
+function reducedMotion() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 }
 
 // ------------------------------------------------------------------ toolbar
@@ -83,7 +108,7 @@ function syncToggle() {
   toggleBtn.classList.toggle("active", showValues);
   toggleBtn.setAttribute("aria-pressed", String(showValues));
 
-  const unplaced = state.fields.filter((f) => f.bbox_confidence === "low").length;
+  const unplaced = unplacedFields().length;
   placeBtn.textContent = state.placing
     ? "Done placing"
     : unplaced
@@ -145,7 +170,7 @@ function render() {
     // A field ingest could not place has no box, so drawing one would put it at
     // the page's top-left corner on top of whatever is printed there. It lives
     // in the panel until someone draws it in placing mode.
-    if (f.bbox_confidence === "low") continue;
+    if (isUnplaced(f)) continue;
     const key = f.page || 1;
     if (!fieldsByPage.has(key)) fieldsByPage.set(key, []);
     fieldsByPage.get(key).push(f);
@@ -177,6 +202,12 @@ function render() {
     container.appendChild(pageEl);
   });
 
+  // Consumed, not accumulated: these boxes have just been built with the
+  // animation on them, and a field written while its box was filtered out
+  // (unplaced, or on no page at all) must not animate the next time anything
+  // else re-renders.
+  justWritten = new Set();
+
   queueMeasure();
 }
 
@@ -198,6 +229,7 @@ function fieldBox(f) {
   if (hasValue) box.classList.add("has-value");
   if (v.source === "agent" && !v.confirmed) box.classList.add("draft");
   if (state.selectedFieldIds.has(f.field_id)) box.classList.add("selected");
+  if (justWritten.has(f.field_id)) box.classList.add("just-written");
 
   if (showValues) {
     const text = displayValue(f, v.value);

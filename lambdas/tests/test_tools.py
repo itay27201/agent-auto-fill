@@ -32,9 +32,14 @@ class FakeStore:
         return self.values
 
     def set_value(self, _sid, field_id, value, source, actor, expected_version=None, confirmed=None):
+        # Mirrors the real store's `if_not_exists(version, 0) + 1` and its
+        # ALL_NEW return: callers propagate the version out of what comes back,
+        # so a stand-in that omitted it would hide the thing being tested.
+        prior = (self.values.get(field_id) or {}).get("version", 0)
         self.values[field_id] = {
             "value": value, "source": source,
             "confirmed": bool(confirmed) if confirmed is not None else (source != "agent"),
+            "version": prior + 1,
         }
         return self.values[field_id]
 
@@ -84,10 +89,31 @@ def test_set_field_writes_as_unconfirmed_agent_draft():
     # believing its own notation was what landed.
     assert out == {"field_id": "f1", "ok": True, "value": "Cohen",
                    "awaiting_user_confirmation": True}
-    assert store.values["f1"] == {"value": "Cohen", "source": "agent", "confirmed": False}
+    assert store.values["f1"] == {"value": "Cohen", "source": "agent",
+                                  "confirmed": False, "version": 1}
     assert emitted == [("field_updated", {"field_id": "f1", "value": "Cohen",
-                                          "source": "agent", "confirmed": False})]
+                                          "source": "agent", "confirmed": False,
+                                          "version": 1})]
     assert store.events[0]["kind"] == "agent_fill"
+
+
+def test_field_updated_carries_the_version_the_store_landed_on():
+    """The browser confirms a draft with `expected_version`. If the write it is
+    confirming never told it the version, it sends none — and the conditional
+    write that exists to catch a lost race silently stops being conditional."""
+    store, emitted = FakeStore(), []
+    ctx = _ctx(store, emitted)
+    with mock.patch.object(tools, "store", store):
+        for value in ("Cohen", "Levi"):
+            tools.run_tool("set_field", {
+                "field_id": "f1", "value": value, "field_label": "Family name",
+                "source": "user_said", "evidence": f"user said '{value}'",
+            }, ctx)
+
+    # Second write onto the same field: the version has moved on, and the event
+    # says so rather than leaving the client to assume it is still at 1.
+    assert [data["version"] for _, data in emitted] == [1, 2]
+    assert emitted[-1][1]["version"] == store.values["f1"]["version"]
 
 
 def test_set_field_refuses_a_write_whose_label_belongs_to_another_box():

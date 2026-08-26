@@ -11,6 +11,7 @@ import {
   setSectionSelected,
   setPlacing,
   fieldsBySection,
+  isUnplaced,
 } from "./state.js";
 
 let container;
@@ -142,7 +143,7 @@ function fieldRow(f) {
   // page and the renderer refuses to export a value sitting in it. Saying so
   // here is the whole point: an unplaced field that looked filled would be
   // filed as a complete form and silently be missing an answer.
-  if (f.bbox_confidence === "low") {
+  if (isUnplaced(f)) {
     row.classList.add("unplaced");
     row.appendChild(placeBanner(f));
   }
@@ -260,7 +261,10 @@ async function saveField(f, value) {
     ]);
     const result = res.results?.[0];
     if (!result?.ok) handleRejected(f.field_id, result);
-    else applyFieldUpdate(f.field_id, { version: (expectedVersion ?? 0) + 1 });
+    // Adopt what the store actually holds. `value` came back normalized — a date
+    // typed 1/2/24 is stored in one shape and printed in that shape, so showing
+    // it as typed would promise an export that will not match.
+    else applyFieldUpdate(f.field_id, { value: result.value, version: result.version });
   } catch {
     /* transient network failure — the field keeps its optimistic local value */
   }
@@ -273,7 +277,7 @@ async function confirmField(fieldId, expectedVersion) {
     ]);
     const result = res.results?.[0];
     if (!result?.ok) return handleRejected(fieldId, result);
-    applyFieldUpdate(fieldId, { confirmed: true, version: (expectedVersion ?? 0) + 1 });
+    applyFieldUpdate(fieldId, { confirmed: true, version: result.version });
   } catch {
     /* transient network failure — the draft banner just stays up for retry */
   }

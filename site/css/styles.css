@@ -782,9 +782,12 @@ a:hover { text-decoration: underline; }
   border-radius: 999px;
   padding: 5px 12px;
 }
-.chat-input { display: flex; align-items: flex-end; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
+.chat-input { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
 .chat-input textarea {
   flex: 1;
+  /* A textarea's default min-width is its intrinsic width, which three 40px
+     buttons and their gaps can push past the pane on a narrow layout. */
+  min-width: 0;
   height: 44px;
   max-height: 120px;
   min-height: 36px;
@@ -799,13 +802,15 @@ a:hover { text-decoration: underline; }
   justify-content: center;
   flex-shrink: 0;
 }
+/* The icon frame only. Every button in the composer gets it and then names its
+   own glyph below — the same split the toolbar icons use further up this file.
+   Keeping the mask-image out of here is what stops a new button from silently
+   inheriting the send arrow. */
 .chat-input button::after {
   content: "";
   width: 16px;
   height: 16px;
   background-color: currentColor;
-  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M22 2L11 13'/><path d='M22 2l-7 20-4-9-9-4 20-7z'/></svg>");
-  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M22 2L11 13'/><path d='M22 2l-7 20-4-9-9-4 20-7z'/></svg>");
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   -webkit-mask-size: contain;
@@ -813,6 +818,66 @@ a:hover { text-decoration: underline; }
   -webkit-mask-position: center;
   mask-position: center;
 }
+#chat-send::after {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M22 2L11 13'/><path d='M22 2l-7 20-4-9-9-4 20-7z'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M22 2L11 13'/><path d='M22 2l-7 20-4-9-9-4 20-7z'/></svg>");
+}
+#chat-mic::after {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='9' y='2' width='6' height='11' rx='3'/><path d='M19 10v2a7 7 0 0 1-14 0v-2'/><path d='M12 19v3'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='9' y='2' width='6' height='11' rx='3'/><path d='M19 10v2a7 7 0 0 1-14 0v-2'/><path d='M12 19v3'/></svg>");
+}
+#chat-mic[data-state="recording"]::after {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect x='6' y='6' width='12' height='12' rx='2' fill='%23000'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect x='6' y='6' width='12' height='12' rx='2' fill='%23000'/></svg>");
+}
+#chat-speak::after {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M11 5L6 9H2v6h4l5 4V5z'/><path d='M15.5 8.5a5 5 0 0 1 0 7'/><path d='M19 5a9 9 0 0 1 0 14'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M11 5L6 9H2v6h4l5 4V5z'/><path d='M15.5 8.5a5 5 0 0 1 0 7'/><path d='M19 5a9 9 0 0 1 0 14'/></svg>");
+}
+#chat-speak[aria-pressed="false"]::after {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M11 5L6 9H2v6h4l5 4V5z'/><path d='M22 9l-6 6'/><path d='M16 9l6 6'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M11 5L6 9H2v6h4l5 4V5z'/><path d='M22 9l-6 6'/><path d='M16 9l6 6'/></svg>");
+}
+
+/* Recording is the one state worth making unmissable — a microphone that is
+   live and doesn't look it is the failure mode people notice too late. */
+#chat-mic[data-state="recording"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(220, 38, 38, 0.35);
+  animation: mic-pulse 1.4s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(220, 38, 38, 0); }
+}
+#chat-speak[aria-pressed="true"] { color: var(--brand); background: var(--brand-soft); }
+/* Swap the glyph for a spinner while we wait on the browser prompt or Gemini.
+   Both pseudo-elements are flex children, so hiding one leaves the other
+   centred with no positioning work. */
+#chat-mic[data-state="permission"]::after,
+#chat-mic[data-state="working"]::after { display: none; }
+#chat-mic[data-state="permission"]::before,
+#chat-mic[data-state="working"]::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--brand-soft);
+  border-top-color: var(--brand);
+  animation: spin 0.7s linear infinite;
+}
+
+.voice-status {
+  flex-basis: 100%;
+  order: -1;
+  padding: 0 2px 6px;
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+/* Collapsed when idle, so the composer does not change height for a status
+   line that is empty almost all of the time. */
+.voice-status:empty { display: none; }
 
 .setup-banner {
   background: var(--draft-bg);

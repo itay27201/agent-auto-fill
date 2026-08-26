@@ -11,3 +11,8 @@ cdk.out/
 
 # Personal Claude Code permission overrides (not team-wide)
 .claude/settings.local.json
+
+# Local bench for the mic/speaker, served from site/ so it shares an origin with
+# the modules it imports. SiteStack ships site/ verbatim, so keeping it out of
+# the repo is what keeps it out of production.
+site/voice-test.html

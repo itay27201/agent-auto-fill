@@ -6,6 +6,16 @@
 // right after the backend deploys, so this is populated automatically and
 // nobody should ever need to enter these by hand.
 
+// Transcription is the one backend URL that is *not* discovered from this
+// project's stack. `/stt` is a route on the separate `text-to-sql` REST API
+// (function `stt-gemini`), so DeployBackend — which reads ApiUrl/WebSocketUrl
+// out of our own CloudFormation outputs and rewrites config.json wholesale —
+// has no way to learn it, and anything committed into config.json is
+// overwritten on the next deploy anyway. Keeping the default here means voice
+// input works on a fresh deploy and on a local server alike; a `sttUrl` key in
+// config.json still wins, for pointing an environment somewhere else.
+const DEFAULT_STT_URL = "https://edczm0lp1f.execute-api.eu-west-1.amazonaws.com/dev/stt";
+
 let cached = null;
 
 export async function loadConfig() {
@@ -30,6 +40,12 @@ export async function waitForConfig(maxAttempts = 4) {
 
 export function isConfigured(cfg) {
   return Boolean(cfg && cfg.apiUrl && cfg.wsUrl);
+}
+
+/** Deliberately not part of `isConfigured` — voice is an optional extra, and a
+ * missing transcription endpoint must never stop the page from loading. */
+export function sttUrl(cfg) {
+  return (cfg && cfg.sttUrl) || DEFAULT_STT_URL;
 }
 
 async function fetchConfig() {

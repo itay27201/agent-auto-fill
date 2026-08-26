@@ -71,7 +71,12 @@
         <div class="chat-scope hidden" id="chat-scope"></div>
         <div class="chat-log" id="chat-log"></div>
         <div class="chat-input">
+          <span class="voice-status" id="voice-status" role="status" aria-live="polite"></span>
           <textarea id="chat-input" placeholder="Ask the assistant about this form..." dir="auto"></textarea>
+          <!-- Both voice buttons ship hidden and are revealed by their own module
+               only once it has confirmed the browser can actually do the job. -->
+          <button type="button" class="hidden" id="chat-speak" title="Read replies aloud" aria-label="Read replies aloud" aria-pressed="false"></button>
+          <button type="button" class="hidden" id="chat-mic" title="Dictate a message" aria-label="Dictate a message" data-state="idle"></button>
           <button type="button" class="primary" id="chat-send" title="Send" aria-label="Send"></button>
         </div>
       </div>

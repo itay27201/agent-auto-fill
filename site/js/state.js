@@ -44,6 +44,21 @@ export function applyFieldUpdate(fieldId, patch) {
   notify();
 }
 
+/** Many patches, one notify. The agent writes a field at a time over the
+ * WebSocket, and every listener here rebuilds its whole DOM — so a forty-field
+ * turn applied one at a time is eighty rebuilds, and the animation that shows
+ * the writing lands on elements that are replaced before it finishes.
+ * `patches` is field_id -> patch. */
+export function applyFieldUpdates(patches) {
+  let touched = false;
+  for (const [fieldId, patch] of Object.entries(patches)) {
+    const prev = state.values[fieldId] || {};
+    state.values[fieldId] = { ...prev, ...patch };
+    touched = true;
+  }
+  if (touched) notify();
+}
+
 /** A box someone moved. Patches the schema entry, not the value — geometry and
  * content are separate stores on the backend for the same reason. */
 export function applyBoxUpdate(fieldId, bbox, page) {
@@ -60,8 +75,22 @@ export function applyBoxUpdate(fieldId, bbox, page) {
 /** Fields ingest could not place. They have no box on the page, so they are
  * unreachable from the document view — the panel is the only way to find them,
  * and the renderer refuses to export a value sitting in one. */
+export function isUnplaced(f) {
+  return f?.bbox_confidence === "low";
+}
+
 export function unplacedFields() {
-  return state.fields.filter((f) => f.bbox_confidence === "low");
+  return state.fields.filter(isUnplaced);
+}
+
+/** Values the agent wrote that nobody has signed off on yet. The renderer
+ * refuses to export while any of these remain, so this is the list standing
+ * between a filled form and a filed one. */
+export function draftFields() {
+  return state.fields.filter((f) => {
+    const v = state.values[f.field_id] || {};
+    return v.source === "agent" && !v.confirmed;
+  });
 }
 
 export function setPlacing(fieldId) {

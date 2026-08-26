@@ -1,4 +1,4 @@
-import { waitForConfig, isConfigured, showUnavailableNotice } from "./config.js";
+import { waitForConfig, isConfigured, showUnavailableNotice, sttUrl } from "./config.js";
 import { createApi } from "./api.js";
 import { createWsClient } from "./ws-client.js";
 import { state, setSession, notify } from "./state.js";
@@ -75,7 +75,7 @@ async function pollUntilReady(api, sessionId) {
     titleEl.textContent = session.filename || "Document";
     if (session.filename) loadingTitleEl.textContent = `Reading ${session.filename}`;
     const progress = describeProgress(session);
-    progressEl.textContent = progress;
+    setProgress(progress);
     setLoadingStatus(progress);
 
     if (session.status === "ready" || session.status === "failed") return session;
@@ -117,8 +117,12 @@ function startApp(api, cfg, session) {
       scopeChip: document.getElementById("chat-scope"),
       input: document.getElementById("chat-input"),
       sendBtn: document.getElementById("chat-send"),
+      micBtn: document.getElementById("chat-mic"),
+      speakBtn: document.getElementById("chat-speak"),
+      voiceStatus: document.getElementById("voice-status"),
     },
-    ws
+    ws,
+    sttUrl(cfg)
   );
 
   notify();
@@ -129,9 +133,11 @@ function startApp(api, cfg, session) {
    * disagreeing about where a value is going to be stamped. */
   function onBoxPlaced(fieldId, error) {
     const label = state.fieldsById.get(fieldId)?.label || fieldId;
-    progressEl.textContent = error
+    // Both are transient: flashed over the progress text and then given back,
+    // rather than replacing it for the rest of the session.
+    flashProgress(error
       ? `Could not save the box for ${label}: ${error.message}`
-      : `Placed ${label}`;
+      : `Placed ${label}`);
   }
 
   let refetching = false;
@@ -161,11 +167,24 @@ function initSideTabs() {
   }
 }
 
+// What the progress slot says when nothing transient is being flashed over it.
+// Held separately because two overlapping flashes used to have the second
+// capture the first's message as the thing to restore — so the transient text
+// became permanent and the real progress never came back.
+let progressBaseline = "";
+let flashTimer = null;
+
+function setProgress(text) {
+  progressBaseline = text;
+  if (!flashTimer) progressEl.textContent = text;
+}
+
 function flashProgress(message, holdMs = 4000) {
-  const prev = progressEl.textContent;
   progressEl.textContent = message;
-  setTimeout(() => {
-    if (progressEl.textContent === message) progressEl.textContent = prev;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    flashTimer = null;
+    progressEl.textContent = progressBaseline;
   }, holdMs);
 }
 

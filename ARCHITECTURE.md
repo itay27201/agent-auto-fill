@@ -72,6 +72,21 @@ clicked in the document view. [`ws-client.js`](site/js/ws-client.js) wraps it:
 `scope_field_ids` is not cosmetic. It shrinks the prompt to one section and
 constrains where the agent is allowed to write.
 
+The textarea can also be filled by voice. [`voice.js`](site/js/voice.js) records,
+[`audio-wav.js`](site/js/audio-wav.js) re-encodes to 16 kHz mono WAV — Gemini does
+not document the webm and mp4 containers browsers actually record — and
+[`stt.js`](site/js/stt.js) posts it. The transcript lands in the box for the person
+to read before sending, rather than going straight to the agent: a misheard value
+here would be written to the form as `user_said` evidence.
+
+**That transcription endpoint is not part of this stack.** It is a public `/stt`
+route on the separate `text-to-sql` API, so DeployBackend — which rewrites
+`config.json` from *our* CloudFormation outputs — cannot discover it, and the URL
+lives as a constant in [`config.js`](site/js/config.js) instead. Its `OPTIONS`
+method is also broken (returns 500), which is why `stt.js` sends no request headers
+at all: that keeps the POST a CORS simple request, so no preflight ever fires.
+Adding a header there breaks transcription with an opaque browser CORS error.
+
 ### 2. API Gateway routes on the body, not the path
 
 One WebSocket API serves two agents.
@@ -261,6 +276,7 @@ the agent, or it re-asks for what the person just typed.
 | you want | file |
 |---|---|
 | the message leaving the browser | [`site/js/chat.js`](site/js/chat.js), [`ws-client.js`](site/js/ws-client.js) |
+| speech going in, and the reply coming back out | [`voice.js`](site/js/voice.js), [`audio-wav.js`](site/js/audio-wav.js), [`stt.js`](site/js/stt.js), [`speak.js`](site/js/speak.js) |
 | the turn being assembled | [`lambdas/functions/agent_chat.py`](lambdas/functions/agent_chat.py) |
 | streaming and the tool loop | [`lambdas/common/agent_loop.py`](lambdas/common/agent_loop.py) |
 | the write guards | [`lambdas/common/tools.py`](lambdas/common/tools.py) |

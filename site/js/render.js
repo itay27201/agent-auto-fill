@@ -15,7 +15,7 @@ export function initRender(el, apiClient) {
   onChange(() => {
     // Field edits can resolve/introduce validation issues; don't force a
     // manual re-check, but do drop a stale result rather than show it as current.
-    setSummary(null);
+    clearSummary();
   });
 }
 
@@ -74,8 +74,9 @@ function confirmRow(fieldId, label) {
     const version = (state.values[fieldId] || {}).version;
     try {
       const res = await api.setFields(state.sid, [{ field_id: fieldId, confirm: true, expected_version: version }]);
-      if (res.results?.[0]?.ok) {
-        applyFieldUpdate(fieldId, { confirmed: true, version: (version ?? 0) + 1 });
+      const result = res.results?.[0];
+      if (result?.ok) {
+        applyFieldUpdate(fieldId, { confirmed: true, version: result.version });
         row.remove();
       }
     } catch {
@@ -106,7 +107,20 @@ async function runRender() {
 
 function setSummary(text, isError = false) {
   const el = container.querySelector(".summary");
-  if (text === null) return;
   el.textContent = text;
   el.style.color = isError ? "var(--danger)" : "var(--muted)";
+}
+
+/** Drop a result that no longer describes the form. A check is a snapshot taken
+ * server-side; the moment a value changes it stops being true, and leaving it up
+ * reads as current — which is worse than showing nothing, because "0 errors"
+ * about the previous state is how someone files an incomplete form. The issue
+ * list goes with it for the same reason. */
+function clearSummary() {
+  const btn = container.querySelector("[data-action=render]");
+  if (btn) btn.disabled = true;
+  container.querySelector(".awaiting-list").innerHTML = "";
+  const link = container.querySelector("[data-role=download]");
+  if (link) link.classList.add("hidden");
+  setSummary("");
 }

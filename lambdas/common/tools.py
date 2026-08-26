@@ -272,11 +272,16 @@ def _write_one(u: dict, ctx: ToolContext) -> dict:
     # notation decides which end the year lands on. The value echoed back is the
     # normalized one — the model should see what was actually written down.
     value = sch.normalize_value(f, u["value"])
-    store.set_value(ctx.sid, fid, value, source="agent", actor=ctx.actor, confirmed=False)
+    stored = store.set_value(ctx.sid, fid, value, source="agent", actor=ctx.actor,
+                             confirmed=False)
     store.append_event(ctx.sid, "agent_fill", actor=ctx.actor, field_id=fid,
                        origin=u["source"], evidence=u["evidence"][:400])
+    # The version travels with the write. Without it the browser has to guess what
+    # the store is at, and a later confirm sends no `expected_version` at all —
+    # dropping the conditional write for exactly the case it exists to protect.
     ctx.emit("field_updated", {"field_id": fid, "value": value,
-                               "source": "agent", "confirmed": False})
+                               "source": "agent", "confirmed": False,
+                               "version": stored.get("version")})
     return {"field_id": fid, "ok": True, "value": value,
             "awaiting_user_confirmation": True}
 
@@ -342,8 +347,10 @@ def _t_clear_field(args: dict, ctx: ToolContext) -> dict:
     fid = args["field_id"]
     if fid not in ctx.by_id:
         return {"ok": False, "error": "no such field_id"}
-    store.set_value(ctx.sid, fid, None, source=None, actor=ctx.actor, confirmed=True)
-    ctx.emit("field_updated", {"field_id": fid, "value": None, "source": None})
+    stored = store.set_value(ctx.sid, fid, None, source=None, actor=ctx.actor,
+                             confirmed=True)
+    ctx.emit("field_updated", {"field_id": fid, "value": None, "source": None,
+                              "version": stored.get("version")})
     return {"ok": True}
 
 

@@ -236,13 +236,28 @@ def _draw_field(c, f, value, page_w, page_h, font):
 
     if f.type == "checkbox":
         if value:
-            c.setFont("Helvetica-Bold", size)
-            c.drawCentredString((left + right) / 2, baseline, "X")
+            # The box here is the form's own printed square, a few points across,
+            # so the 7pt floor `size` carries for text would overflow it. Fit the
+            # X to the square and centre it on both axes rather than sitting it
+            # on a text baseline.
+            box_h, box_w = top - bottom, right - left
+            mark = max(3.0, min(size, box_h * 0.9, box_w * 0.9))
+            c.setFont("Helvetica-Bold", mark)
+            c.drawCentredString((left + right) / 2,
+                                bottom + (box_h - mark * 0.72) / 2, "X")
         return
 
     text = ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)
     rtl = _is_rtl(text)
     c.setFont(font if (rtl and font) else "Helvetica", size)
+
+    # A box printed as separate character cells wants one character per cell. An
+    # id number drawn as a single string starts at one edge and drifts out of
+    # step with the cells immediately, which on a 9-digit field reads as a
+    # different number.
+    comb = (f.backend or {}).get("comb")
+    if comb and _draw_comb(c, text, comb, page_w, bottom, top, size, rtl):
+        return
 
     if rtl:
         # Hebrew and Arabic need the bidi algorithm applied before drawing;
@@ -252,10 +267,57 @@ def _draw_field(c, f, value, page_w, page_h, font):
             from bidi.algorithm import get_display
             text = get_display(text)
         except ImportError:
-            pass
+            log.warning("python-bidi is not installed — RTL values will stamp reversed")
         c.drawRightString(right - 2, baseline, text)
     else:
         c.drawString(left + 2, baseline, text)
+
+
+def _draw_comb(c, text, comb, page_w, bottom, top, size, rtl) -> bool:
+    """One character per printed cell. Returns whether it drew anything.
+
+    Every way this can be unsure returns False and lets the caller draw the value
+    as an ordinary string. A value spread across cells that turn out not to line
+    up is harder to read than one written straight, and a value silently trimmed
+    to the number of cells is a different value.
+    """
+    xs = comb.get("xs") or []
+    cells = len(xs) - 1
+    if cells < 1:
+        return False
+
+    chars = _comb_chars(text, cells)
+    if not chars:
+        return False
+
+    # Cells are laid out left to right on the page whichever way the script runs;
+    # what changes is which end the value starts from.
+    edges = [(xs[i] * page_w, xs[i + 1] * page_w) for i in range(cells)]
+    if rtl:
+        edges = edges[::-1]
+
+    fit = min(size, (top - bottom) * 0.72,
+              min(right - left for left, right in edges) * 0.9)
+    c.setFontSize(fit)
+    baseline = bottom + (top - bottom - fit) / 2 + fit * 0.18
+    for ch, (left, right) in zip(chars, edges):
+        c.drawCentredString((left + right) / 2, baseline, ch)
+    return True
+
+
+def _comb_chars(text: str, cells: int) -> list[str] | None:
+    """The characters to distribute, or None if they will not fit.
+
+    A date reaches here as `26/02/1996` for eight cells, because the form prints
+    the separators between the cells rather than in them. So the punctuation is
+    dropped only when keeping it would overflow — never pre-emptively, since a
+    field whose cells really do hold a slash should keep it.
+    """
+    for candidate in ([ch for ch in text if not ch.isspace()],
+                      [ch for ch in text if ch.isalnum()]):
+        if 0 < len(candidate) <= cells:
+            return candidate
+    return None
 
 
 def _is_rtl(text: str) -> bool:
@@ -264,7 +326,13 @@ def _is_rtl(text: str) -> bool:
 
 def _register_font():
     """reportlab's built-in fonts have no Hebrew or Arabic glyphs — they
-    render as black boxes. Ship a TTF in the layer."""
+    render as black boxes. Ship a TTF in the layer.
+
+    Failing here is not cosmetic: `_draw_field` falls back to Helvetica, and
+    every Hebrew value on the form exports as garbage. It used to fail silently,
+    which is how it went unnoticed — the browser viewer draws its own preview
+    with system fonts and looks perfectly correct.
+    """
     try:
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
@@ -273,6 +341,9 @@ def _register_font():
             pdfmetrics.registerFont(TTFont("FormAgentRTL", config.RTL_FONT_PATH))
         return "FormAgentRTL"
     except Exception:
+        log.warning("no RTL font at %s — Hebrew and Arabic values will not render. "
+                    "Check the fonts layer is attached to this function.",
+                    config.RTL_FONT_PATH)
         return None
 
 

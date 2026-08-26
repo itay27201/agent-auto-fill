@@ -58,6 +58,39 @@ _MAX_REGION_H = 0.30
 # antialiased comma from the row above should not disqualify a whole cell.
 _BLANK_TEXT_TOLERANCE = 0.06
 
+# A checkbox is neither a path nor a ruled cell. On the 101 every one of the 61
+# of them is a ZapfDingbats glyph — `o` and `q`, which draw as empty squares — so
+# `text_boxes` reports them as the form's own printing and all three tests that
+# follow throw the box away: `_is_blank` sees a character in the cell,
+# `_printed_fraction` reports the box 98-100% covered, and the minimum-size floor
+# calls it too small to write in. They are, in fact, the most common writing area
+# on the page.
+#
+# The font is the discriminator, not the size. A digit is about the same size and
+# shape as a dingbat square, so a size-and-aspect heuristic would offer half the
+# form's serial numbers as checkboxes.
+_SYMBOL_FONTS = ("dingbat", "wingding", "webding", "symbol", "marlett")
+# ...with the box codepoints as a fallback, for a form whose symbol font is
+# embedded under a name that gives nothing away.
+_BOX_GLYPHS = "☐☑☒■□▪▫◻◼❑❒❏❐"
+_CHECKBOX_MIN, _CHECKBOX_MAX = 0.004, 0.025
+# Width over height. ZapfDingbats' square measures 1.41 because the glyph's
+# advance is wider than its box; anything far outside this is a letter.
+_CHECKBOX_ASPECT = (0.5, 2.0)
+
+# A comb is a box divided into one cell per character — the nine squares an
+# Israeli ID number goes into, the eight a date does. Its dividers are far too
+# short to be rules (0.006 of the page against `_MIN_RULE_LEN`'s 0.02), so
+# `rules` drops them, and the whole number ends up drawn as one string starting
+# at the box's left edge.
+_COMB_MIN_TICK = 0.003
+_COMB_MIN_TICKS = 3
+# How far the widest cell may stray from the average before this stops being a
+# comb and starts being a row of unrelated tick marks. Measured across the 101's
+# combs: the worst real one is 0.25 out, because the gap to the box's own edge
+# runs a little wider than the gaps between dividers.
+_COMB_EVENNESS = 0.3
+
 
 # ---------------------------------------------------------------- conversion
 
@@ -238,26 +271,55 @@ def _merge(lines: list[list[float]], axis: int) -> list[list[float]]:
 
     `axis` is the coordinate that stays constant: 1 (y) for horizontal rules,
     0 (x) for vertical ones.
+
+    Collinear rules are grouped *before* they are merged, and only then sorted
+    along the span. Sorting the whole list by `(axis, span)` — which this used to
+    do — looks equivalent and is not: two rules on the same column whose x
+    differs by a ten-thousandth order by that hair rather than by position down
+    the page, so a rule near the bottom can precede one near the top. The
+    "touching" test below then passes trivially and `max()` absorbs the second
+    rule into the first, deleting it. On page one of the 101 that destroyed 45 of
+    96 vertical rules, including the column separators for `שם משפחה` and
+    `שם פרטי` — which merged five columns into two and put the employee's ID
+    number under the wrong heading.
     """
     if not lines:
         return []
     span = 1 - axis  # the coordinate the rule extends along
-    lines = sorted(lines, key=lambda b: (b[axis], b[span]))
 
-    out = [list(lines[0])]
-    for line in lines[1:]:
-        prev = out[-1]
-        same_position = abs(line[axis] - prev[axis]) <= _MERGE_TOL
-        # Only merge collinear rules that actually touch. Two separate cell
-        # borders on the same row must stay separate or the gap between them
-        # disappears and takes a column boundary with it.
-        touching = line[span] <= prev[span + 2] + _MERGE_TOL
-        if same_position and touching:
-            prev[span + 2] = max(prev[span + 2], line[span + 2])
-            prev[axis + 2] = max(prev[axis + 2], line[axis + 2])
-        else:
-            out.append(list(line))
+    out = []
+    for group in _collinear(lines, axis):
+        group.sort(key=lambda b: b[span])
+        run = list(group[0])
+        for line in group[1:]:
+            # Only merge rules that actually touch. Two separate cell borders on
+            # the same row must stay separate or the gap between them disappears
+            # and takes a column boundary with it.
+            if line[span] <= run[span + 2] + _MERGE_TOL:
+                run[span + 2] = max(run[span + 2], line[span + 2])
+                run[axis + 2] = max(run[axis + 2], line[axis + 2])
+            else:
+                out.append(run)
+                run = list(line)
+        out.append(run)
     return out
+
+
+def _collinear(lines: list[list[float]], axis: int) -> list[list[list[float]]]:
+    """Rules sitting on the same line, grouped.
+
+    Anchored on each group's *first* member rather than its last, so a run of
+    rules a tolerance apart cannot chain into one group that drifts across a real
+    column boundary. That matches what the old `prev[axis]` comparison did, which
+    was the one part of it worth keeping.
+    """
+    groups: list[list[list[float]]] = []
+    for line in sorted(lines, key=lambda b: b[axis]):
+        if groups and line[axis] - groups[-1][0][axis] <= _MERGE_TOL:
+            groups[-1].append(list(line))
+        else:
+            groups.append([list(line)])
+    return groups
 
 
 def cells(horizontal: list[list[float]], vertical: list[list[float]]) -> list[list[float]]:
@@ -368,13 +430,30 @@ def candidate_regions(page) -> list[dict]:
             continue  # already covered by a region we kept
         regions.append({"bbox": bbox, "found_by": kind})
 
+    for r in regions:
+        r["nearby_text"] = nearby_text(r["bbox"], text)
+
+    # Checkboxes are appended rather than run through the loop above, and are
+    # deliberately exempt from both its tests. A tick box is never blank — it
+    # holds the very glyph that makes it a tick box — and it legitimately sits
+    # inside a larger region, so the "already covered" rule would discard every
+    # one that shares a row with a cell.
+    regions += checkbox_glyphs(page, text)
+
+    ticks = comb_ticks(page)
+    for r in regions:
+        if r.get("is_checkbox"):
+            continue
+        comb = _comb_for(r["bbox"], ticks)
+        if comb:
+            r["comb"] = comb
+
     # Reading order, top to bottom then right to left. RTL because these forms
     # are, and because the model is asked to reason about "the cell to the
     # right of the label" — an order that fights the page makes that harder.
     regions.sort(key=lambda r: (round(r["bbox"][1], 2), -r["bbox"][2]))
     for i, r in enumerate(regions, start=1):
         r["region_id"] = i
-        r["nearby_text"] = nearby_text(r["bbox"], text)
     return regions
 
 
@@ -428,6 +507,141 @@ def _has_box_beneath(bbox, blank_cells) -> bool:
     return False
 
 
+def checkbox_glyphs(page, text=None) -> list[dict]:
+    """The little squares a person ticks, read off the page as glyphs.
+
+    Returned in the same shape as every other region so `_place`, `sanity_check`
+    and the numbered-image trick do not have to care where a region came from —
+    plus `is_checkbox`, which tells `sanity_check` to skip the two tests that
+    would otherwise reject all of them, and tells the renderer to draw an X
+    rather than a string.
+
+    Nothing here infers a label: `nearby_text` already answers that, and on a
+    right-to-left form it correctly reports the label as sitting to the box's
+    left or right without this needing an opinion.
+    """
+    if text is None:
+        text = text_boxes(page)
+
+    pw, ph = page.get_size()
+    try:
+        textpage = page.get_textpage()
+    except Exception:
+        log.warning("no text page available — no checkbox glyphs this page")
+        return []
+
+    out = []
+    try:
+        for i in range(textpage.count_chars()):
+            ch = textpage.get_text_range(i, 1)
+            if not ch or not ch.strip():
+                continue
+            # The overwhelming majority of characters on these forms are Hebrew
+            # body text. Rejecting those before asking pdfium for a font name
+            # keeps this to a few dozen ctypes calls per page instead of a few
+            # thousand.
+            if "֐" <= ch <= "׿" or ch.isdigit():
+                continue
+            if not _is_mark_glyph(ch, _font_name(textpage, i)):
+                continue
+            try:
+                bbox = clamp(norm(textpage.get_charbox(i), pw, ph))
+            except Exception:
+                continue
+            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            if not (_CHECKBOX_MIN <= w <= _CHECKBOX_MAX
+                    and _CHECKBOX_MIN <= h <= _CHECKBOX_MAX):
+                continue
+            if not (_CHECKBOX_ASPECT[0] <= w / h <= _CHECKBOX_ASPECT[1]):
+                continue
+            out.append({"bbox": bbox, "found_by": "checkbox", "is_checkbox": True,
+                        "nearby_text": nearby_text(bbox, text)})
+    except Exception:
+        log.exception("checkbox scan failed; continuing without its regions")
+    finally:
+        try:
+            textpage.close()
+        except Exception:
+            pass
+    return out
+
+
+def comb_ticks(page) -> list[list[float]]:
+    """The short dividers that split one box into one cell per character.
+
+    Deliberately not folded into `rules`. These are an order of magnitude shorter
+    than a rule, and letting them into the grid would divide every row they touch
+    into nine columns — `_MIN_RULE_LEN` exists to keep them out. They are useful
+    only once a region is known, as a description of how that one box is divided.
+    """
+    import pypdfium2.raw as pdfium_c
+
+    pw, ph = page.get_size()
+    try:
+        objects = list(page.get_objects(max_depth=4))
+    except Exception:
+        log.exception("could not walk page objects; no comb cells this page")
+        return []
+
+    ticks = []
+    for obj in objects:
+        if getattr(obj, "type", None) != pdfium_c.FPDF_PAGEOBJ_PATH:
+            continue
+        try:
+            bbox = norm(obj.get_bounds(), pw, ph)
+        except Exception:
+            continue
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        if w <= _RULE_THICKNESS and _COMB_MIN_TICK <= h < _MIN_RULE_LEN:
+            ticks.append(bbox)
+    return ticks
+
+
+def _comb_for(bbox, ticks) -> dict | None:
+    """How this box is divided into character cells, or None if it is not.
+
+    Evenness is the whole test. Any box on a dense form has some short strokes
+    crossing it; only a comb has them at a regular pitch, and a value distributed
+    across cells that are not really there is worse than one written straight.
+    """
+    x0, y0, x1, y1 = bbox
+    inside = sorted({round(t[0], 5) for t in ticks
+                     if x0 + _MERGE_TOL < t[0] < x1 - _MERGE_TOL
+                     and t[3] > y0 and t[1] < y1})
+    if len(inside) < _COMB_MIN_TICKS:
+        return None
+
+    bounds = [x0, *inside, x1]
+    gaps = [b - a for a, b in zip(bounds, bounds[1:])]
+    mean = sum(gaps) / len(gaps)
+    if mean <= 0 or max(abs(g - mean) for g in gaps) > mean * _COMB_EVENNESS:
+        return None
+    return {"cells": len(gaps), "xs": [round(v, 5) for v in bounds]}
+
+
+def _is_mark_glyph(ch: str, font: str) -> bool:
+    if ch in _BOX_GLYPHS:
+        return True
+    lowered = font.lower()
+    return any(name in lowered for name in _SYMBOL_FONTS)
+
+
+def _font_name(textpage, index: int) -> str:
+    """The font one character is set in. pypdfium2 has no wrapper for this, so
+    it goes through the raw binding."""
+    import ctypes
+
+    import pypdfium2.raw as pdfium_c
+
+    try:
+        buf = ctypes.create_string_buffer(128)
+        flags = ctypes.c_int()
+        n = pdfium_c.FPDFText_GetFontInfo(textpage.raw, index, buf, 128, ctypes.byref(flags))
+        return buf.raw[:max(0, n - 1)].decode("utf-8", "replace") if n else ""
+    except Exception:
+        return ""
+
+
 def merge_regions(primary: list[dict], extra: list[dict]) -> list[dict]:
     """Fold a second source of regions into the first, then renumber.
 
@@ -436,16 +650,58 @@ def merge_regions(primary: list[dict], extra: list[dict]) -> list[dict]:
     belongs to. Neither is a superset of the other, so they are unioned rather
     than one replacing the other — and `primary` wins a tie, because a cell
     reconstructed from ruled lines is exact while an OCR box is inferred.
+
+    But "overlaps a region we already have" describes two different situations,
+    and this used to treat them alike. Scoring the overlap against the *smaller*
+    of the two areas means a finer Textract box sitting wholly inside a coarser
+    PDF one scores exactly 1.0 and is always discarded — so Textract could only
+    ever fill a gap, never correct a region that was too wide. That is precisely
+    the case where the PDF is wrong: when the rules dividing a row were not read,
+    the row comes back as one box spanning several columns, and the evidence that
+    it did is the two or three smaller boxes Textract found inside it.
+
+    So: a candidate of comparable size is the same box found twice, and the PDF
+    keeps it. A materially smaller one inside it is a subdivision, and is kept.
+    A region with enough of those inside it to account for most of its area was
+    under-segmented, and is dropped in favour of them.
     """
     out = [dict(r) for r in primary]
+    children: dict[int, list[list[float]]] = {}
+
     for candidate in extra:
         box = candidate.get("bbox")
         if not box or area(box) <= 0:
             continue
-        if any(intersection(box, r["bbox"]) / max(min(area(box), area(r["bbox"])), 1e-9) > 0.6
-               for r in out):
+
+        duplicate, parent = False, None
+        for i, r in enumerate(out):
+            overlap = intersection(box, r["bbox"])
+            if overlap / max(min(area(box), area(r["bbox"])), 1e-9) <= 0.6:
+                continue
+            # Comparable in size, measured both ways round. One-sided, this
+            # would call a wide box a duplicate of any tick square inside it.
+            if area(box) > area(r["bbox"]) * 0.6 and area(r["bbox"]) > area(box) * 0.6:
+                duplicate = True    # the same box, found twice over
+                break
+            # A checkbox is never a parent: everything overlaps a tick square
+            # without that saying anything about how the page is divided.
+            if not r.get("is_checkbox"):
+                parent = i
+        if duplicate:
             continue
+
         out.append(dict(candidate))
+        if parent is not None:
+            children.setdefault(parent, []).append(box)
+
+    superseded = {
+        i for i, boxes in children.items()
+        if len(boxes) >= 2
+        and sum(intersection(b, out[i]["bbox"]) for b in boxes) > area(out[i]["bbox"]) * 0.5
+    }
+    if superseded:
+        log.info("%d region(s) replaced by the finer boxes found inside them", len(superseded))
+    out = [r for i, r in enumerate(out) if i not in superseded]
 
     out.sort(key=lambda r: (round(r["bbox"][1], 2), -r["bbox"][2]))
     for i, r in enumerate(out, start=1):
@@ -645,18 +901,28 @@ def _same_box(a, b) -> bool:
 
 # ------------------------------------------------------------ sanity checking
 
-def sanity_check(bbox, text, others=(), label: str = "") -> str | None:
+def sanity_check(bbox, text, others=(), label: str = "",
+                 is_checkbox: bool = False) -> str | None:
     """Return why this box is unusable, or None if it is fine.
 
     Every one of these is a real failure seen on the 101 form. They are
     mechanical and cost nothing, and the alternative to running them is stamping
     a person's name across a tax form's instructions and calling it filled.
+
+    A checkbox is exempt from three of them, because for a tick box each one is
+    measuring the wrong thing. It is smaller than anything a person writes a word
+    in; the X goes *on top of* the form's own square, which is what the square is
+    for; and it sits inside whatever larger cell shares its row without that
+    being a collision. Applying these to checkboxes rejected every one of the 61
+    on this form.
     """
     if not bbox or len(bbox) != 4:
         return "no box"
 
     box = clamp(bbox)
-    if area(box) < _MIN_REGION_W * _MIN_REGION_H:
+    if area(box) <= 0:
+        return "box is too small to write in"
+    if not is_checkbox and area(box) < _MIN_REGION_W * _MIN_REGION_H:
         return "box is too small to write in"
 
     # Then the most specific diagnosis available. Every branch here rejects, so
@@ -668,17 +934,19 @@ def sanity_check(bbox, text, others=(), label: str = "") -> str | None:
             if t["text"].strip() == label.strip() and intersection(box, t["bbox"]) > 0:
                 return "box is on its own label rather than beside it"
 
-    printed = _printed_fraction(box, text)
-    if printed > 0.4:
-        return f"box lies on top of the form's own text ({printed:.0%} covered)"
+    if not is_checkbox:
+        printed = _printed_fraction(box, text)
+        if printed > 0.4:
+            return f"box lies on top of the form's own text ({printed:.0%} covered)"
 
     if box[2] - box[0] > _MAX_REGION_W and box[3] - box[1] > _MAX_REGION_H:
         return "box covers most of the page"
 
-    for other in others:
-        overlap = intersection(box, other)
-        if overlap / max(min(area(box), area(other)), 1e-9) > 0.6:
-            return "box overlaps another field's box"
+    if not is_checkbox:
+        for other in others:
+            overlap = intersection(box, other)
+            if overlap / max(min(area(box), area(other)), 1e-9) > 0.6:
+                return "box overlaps another field's box"
 
     return None
 

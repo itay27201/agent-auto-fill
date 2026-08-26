@@ -342,6 +342,140 @@ def test_near_identical_rules_are_one_grid_line():
     assert got[0][3] - got[0][1] > 0.05, "the real row, not a sliver"
 
 
+def test_merge_keeps_collinear_rules_that_do_not_touch():
+    """Two segments of the same column, far apart down the page, are two rules.
+
+    This is the bug at unit level. `_merge` used to sort the whole list by
+    `(axis, span)`, so two rules on the same column whose x differed by a
+    ten-thousandth ordered by that hair instead of by position — putting the
+    lower one first. The "touching" test then passed trivially and `max()`
+    absorbed the upper one into it. On page one of the 101 that deleted 45 of 96
+    vertical rules, including the separators that divide section ב into its five
+    columns, and the employee's ID number was stamped under `שם פרטי`.
+    """
+    lower = [0.35225, 0.8126, 0.35305, 0.8446]
+    upper = [0.35234, 0.2497, 0.35314, 0.2804]   # a hair to the right, far above
+
+    got = geo._merge([lower, upper], axis=0)
+    assert len(got) == 2, got
+    assert sorted(round(g[1], 4) for g in got) == [0.2497, 0.8126], got
+
+    # ...and the ones that genuinely do touch are still collapsed into one.
+    joined = geo._merge([[0.35, 0.10, 0.3508, 0.16], [0.3501, 0.16, 0.3509, 0.22]], axis=0)
+    assert len(joined) == 1, joined
+    assert round(joined[0][1], 4) == 0.10 and round(joined[0][3], 4) == 0.22
+
+    # Horizontal rules take the same path with the axes swapped.
+    rows = geo._merge([[0.60, 0.4001, 0.95, 0.4009], [0.10, 0.4002, 0.50, 0.4010]], axis=1)
+    assert len(rows) == 2, "two borders on the same row, with a gap between them"
+
+
+def test_the_employee_row_reconstructs_five_columns():
+    """Section ב of the real 101: מספר זהות, שם משפחה, שם פרטי, תאריך לידה, תאריך עליה.
+
+    The row that started this. It used to come back as two boxes — the first
+    spanning `מספר זהות` and `שם משפחה` together, which is where the ID number
+    went, and the second spanning `שם פרטי` and `תאריך לידה`. With no region of
+    their own, the two name fields fell through to the model's estimate escape
+    hatch and landed a whole row down.
+    """
+    src = Path(__file__).resolve().parents[2] / "Service_Pages_Income_tax_annual-report-2024_itc101.pdf"
+    if not src.exists():
+        print("     (skipped: the 101 PDF is not in the repo root)")
+        return
+
+    page = pdfium.PdfDocument(src.read_bytes())[0]
+    band = [r for r in geo.candidate_regions(page) if r["bbox"][3] > 0.25 and r["bbox"][1] < 0.29]
+
+    assert len(band) == 5, [r["bbox"] for r in band]
+    # Right to left, one per printed column heading.
+    edges = [round(r["bbox"][2], 2) for r in band]
+    assert edges == [0.91, 0.74, 0.53, 0.35, 0.20], edges
+    # None of them may span two headings: the widest is well under a third of
+    # the page, where the merged box used to be 0.39 wide.
+    for r in band:
+        assert r["bbox"][2] - r["bbox"][0] < 0.25, r["bbox"]
+
+
+def test_checkbox_glyphs_are_writing_areas():
+    """The 61 tick squares on the real 101 are ZapfDingbats glyphs, so every test
+    in this module used to read them as the form's own printing and throw them
+    away. One EnrichFn run logged `33 of 47 fields could not be placed`, almost
+    all of them checkboxes reported as 98-100% covered by text."""
+    src = Path(__file__).resolve().parents[2] / "Service_Pages_Income_tax_annual-report-2024_itc101.pdf"
+    if not src.exists():
+        print("     (skipped: the 101 PDF is not in the repo root)")
+        return
+
+    page = pdfium.PdfDocument(src.read_bytes())[0]
+    boxes = [r for r in geo.candidate_regions(page) if r.get("is_checkbox")]
+    assert len(boxes) == 36, len(boxes)
+
+    # The font is the discriminator, so nothing that is merely small and square
+    # comes through: the page carries plenty of digits at the same size.
+    for r in boxes:
+        w, h = r["bbox"][2] - r["bbox"][0], r["bbox"][3] - r["bbox"][1]
+        assert 0.004 <= w <= 0.025 and 0.004 <= h <= 0.025, r["bbox"]
+        assert r["found_by"] == "checkbox"
+
+    # Each one carries the choice it stands for. On this RTL form the label sits
+    # to the box's left.
+    labels = {n["text"] for r in boxes for n in r["nearby_text"]}
+    for choice in ("זכר", "רווק/ה", "נשוי/אה", "גרוש/ה"):
+        assert choice in labels, choice
+
+
+def test_comb_cells_are_detected_and_only_where_they_are_real():
+    """`מספר זהות` is printed as nine separate squares, one per digit, and a date
+    as eight. Drawn as one string the number starts at an edge and drifts out of
+    step with the cells immediately."""
+    src = Path(__file__).resolve().parents[2] / "Service_Pages_Income_tax_annual-report-2024_itc101.pdf"
+    if not src.exists():
+        print("     (skipped: the 101 PDF is not in the repo root)")
+        return
+
+    page = pdfium.PdfDocument(src.read_bytes())[0]
+    regions = geo.candidate_regions(page)
+    combed = [r for r in regions if r.get("comb")]
+    assert combed, "the form is full of character-cell boxes"
+
+    # The identity column of the employee row: nine cells for nine digits.
+    row = [r for r in regions if r["bbox"][3] > 0.25 and r["bbox"][1] < 0.29]
+    ident = max(row, key=lambda r: r["bbox"][2])
+    assert ident["comb"]["cells"] == 9, ident.get("comb")
+    assert len(ident["comb"]["xs"]) == 10, "one boundary more than there are cells"
+    assert ident["comb"]["xs"] == sorted(ident["comb"]["xs"])
+
+    for r in combed:
+        assert r["comb"]["cells"] >= geo._COMB_MIN_TICKS + 1
+        assert not r.get("is_checkbox"), "a tick square is not divided into cells"
+
+    # Evenness is the test that keeps this off boxes that merely have strokes
+    # crossing them.
+    ticks = [[0.10, 0.10, 0.101, 0.16], [0.30, 0.10, 0.301, 0.16]]
+    assert geo._comb_for([0.05, 0.10, 0.90, 0.16], ticks) is None, "two ticks is not a comb"
+    ragged = [[0.11, 0.10, 0.111, 0.16], [0.20, 0.10, 0.201, 0.16],
+              [0.70, 0.10, 0.701, 0.16]]
+    assert geo._comb_for([0.10, 0.10, 0.90, 0.16], ragged) is None, "gaps nothing like equal"
+
+
+def test_sanity_check_does_not_reject_a_checkbox_for_being_a_checkbox():
+    """A tick goes on top of the form's own square — that is what the square is
+    for — and the square is smaller than anything a person writes a word in.
+    The two tests that measure those things reject every checkbox on the page."""
+    glyph = [0.888, 0.334, 0.901, 0.343]
+    printed = [{"bbox": glyph, "text": "o"}]
+
+    assert geo.sanity_check(glyph, printed) is not None, "rejected as ordinary text"
+    assert geo.sanity_check(glyph, printed, is_checkbox=True) is None
+
+    # It may also sit inside a wider cell without that counting as a collision.
+    row = [0.60, 0.33, 0.92, 0.345]
+    assert geo.sanity_check(glyph, printed, others=[row], is_checkbox=True) is None
+    # A degenerate box is still refused, checkbox or not.
+    assert geo.sanity_check([0.5, 0.5, 0.5, 0.5], [], is_checkbox=True) is not None
+
+
 def test_a_label_inside_its_own_cell_still_yields_a_writing_area():
     """Sections א, ב and ו of the 101 print the label in the top corner of the
     box you write in. Rejecting every cell that contains text loses all of them."""
@@ -402,6 +536,41 @@ def test_merge_regions_prefers_the_pdf_and_renumbers():
     kept = [r for r in merged if r["bbox"] == [0.70, 0.10, 0.90, 0.16]]
     assert kept and kept[0]["found_by"] == "cell", "the PDF wins the overlap"
     assert any(r.get("textract_label") == "מספר זהות" for r in merged)
+
+
+def test_textract_may_subdivide_a_region_the_pdf_read_too_wide():
+    """Scoring the overlap against the smaller area means a finer box inside a
+    coarser one always scores 1.0, so Textract could only ever fill a gap and
+    never correct a row whose dividing rules went unread — which is the one case
+    where the PDF is wrong and Textract can see it."""
+    wide = [{"bbox": [0.50, 0.26, 0.91, 0.28], "found_by": "cell"}]
+    columns = [
+        {"bbox": [0.74, 0.26, 0.91, 0.28], "found_by": "textract_value",
+         "textract_label": "מספר זהות"},
+        {"bbox": [0.50, 0.26, 0.73, 0.28], "found_by": "textract_value",
+         "textract_label": "שם משפחה"},
+    ]
+    merged = geo.merge_regions(wide, columns)
+
+    assert len(merged) == 2, merged
+    assert not any(r["bbox"] == [0.50, 0.26, 0.91, 0.28] for r in merged), \
+        "the over-wide region is superseded by the columns inside it"
+    assert {r["textract_label"] for r in merged} == {"מספר זהות", "שם משפחה"}
+    assert [r["region_id"] for r in merged] == [1, 2]
+
+    # One child on its own is not evidence of anything: the coarse region stays,
+    # and the finer box joins it rather than replacing it.
+    merged = geo.merge_regions(wide, columns[:1])
+    assert len(merged) == 2, merged
+    assert any(r["bbox"] == [0.50, 0.26, 0.91, 0.28] for r in merged)
+
+    # A checkbox is never treated as a parent — everything overlaps a tick
+    # square without that saying anything about how the page is divided.
+    tick = [{"bbox": [0.888, 0.334, 0.901, 0.343], "found_by": "checkbox",
+             "is_checkbox": True}]
+    kept = geo.merge_regions(tick, [{"bbox": [0.60, 0.33, 0.92, 0.345],
+                                     "found_by": "textract_value"}])
+    assert len(kept) == 2 and any(r.get("is_checkbox") for r in kept)
 
 
 def test_the_real_form_reconstructs_its_boxes():

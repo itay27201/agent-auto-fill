@@ -95,7 +95,11 @@ MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "16384"))
 #
 #   1  vision-estimated bboxes, no geometry, no form map
 #   2  boxes from the PDF's own ruled geometry, sanity-checked, + form-map.md
-SCHEMA_VERSION = int(os.environ.get("SCHEMA_VERSION", "2"))
+#   3  collinear rules no longer swallow each other, so a row comes back as its
+#      real columns instead of one box spanning several; checkbox glyphs are
+#      writing areas rather than printed text; boxes printed as character cells
+#      carry a comb; Textract may subdivide a region the PDF read too wide
+SCHEMA_VERSION = int(os.environ.get("SCHEMA_VERSION", "3"))
 
 INGEST_STATE_MACHINE_ARN = os.environ.get("INGEST_STATE_MACHINE_ARN", "")
 RASTER_DPI = int(os.environ.get("RASTER_DPI", "150"))

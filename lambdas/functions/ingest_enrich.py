@@ -92,6 +92,8 @@ Identify every input a person must complete on THIS PAGE, and give each one the 
 - Read the region id off the image, and check it against the `nearby_text` in the list. A region whose nearby text is the label you have in mind is the right region.
 - Some regions carry a `textract_label`: a form-reader's guess at which printed label that box belongs to. Treat it as a strong hint, not as fact — it is often right and is occasionally attached to the wrong box, so confirm it against the image before you trust it, and ignore it when the image disagrees.
 - On a right-to-left form the label is usually the text to the RIGHT of, or directly ABOVE, the box that belongs to it.
+- A region marked `"kind": "checkbox"` is one of the form's printed tick squares. It takes an X, never text, so the field that claims it must be "checkbox" — or, where several of them are the mutually exclusive answers to one question, one "select" field whose options are those choices. Its `nearby_text` is the choice it stands for.
+- A region with `character_cells` is printed as that many separate boxes, one character each. Use it to type the field and to set `max_length`: nine cells beside a label about identity is a 9-digit id, eight is usually a date.
 - Do NOT return coordinates. `region_id` is the only way to place a field.
 - If a person clearly must write somewhere that has no region, set `"region_id": null` and give an approximate `"bbox": [x0, y0, x1, y1]` normalized 0..1 from the top-left instead. Use this sparingly — a field with no box is handled gracefully downstream, a field in the wrong box is not.
 - Every field must be on this page. Set "page" to the page number given below.
@@ -270,6 +272,16 @@ def _slim_regions(regions: list[dict], page_no: int) -> dict:
     out = []
     for r in regions:
         item = {"region_id": r["region_id"], "nearby_text": r.get("nearby_text") or []}
+        if r.get("is_checkbox"):
+            # The one thing about a region the model cannot reliably read off the
+            # image: at this size a tick box and a full stop look alike, and the
+            # difference decides whether the field takes an X or a sentence.
+            item["kind"] = "checkbox"
+        if r.get("comb"):
+            # A box printed as nine character cells is telling you what goes in
+            # it. The model does not place anything with this — it types the
+            # field with it.
+            item["character_cells"] = r["comb"]["cells"]
         if r.get("textract_label"):
             item["textract_label"] = r["textract_label"]
         if r.get("already_contains"):
@@ -310,6 +322,8 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
         rid = f.get("region_id")
         region = regions.get((page, rid)) if rid is not None else None
 
+        is_checkbox = bool(region and region.get("is_checkbox"))
+
         if region:
             f["bbox"] = region["bbox"]
             f["bbox_source"] = "region"
@@ -331,7 +345,8 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
         page_text = text.get(page, [])
         reason = geo.sanity_check(f["bbox"], page_text,
                                   others=placed.get(page, []),
-                                  label=f.get("label", "")) if f.get("bbox") else "no box"
+                                  label=f.get("label", ""),
+                                  is_checkbox=is_checkbox) if f.get("bbox") else "no box"
         # An estimate on a page with no text and no rules cannot be checked by
         # anything: `sanity_check` has nothing to measure it against, so it would
         # pass by default and be stamped onto the form. A box nobody can verify
@@ -347,9 +362,21 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
             f["bbox_note"] = reason
         else:
             f["bbox_confidence"] = "ok" if f["bbox_source"] in ("region", "snapped") else "estimated"
-            placed.setdefault(page, []).append(f["bbox"])
+            # Checkboxes are kept out of the collision list for the same reason
+            # they are exempt from the collision test: a tick box inside a wider
+            # cell is the normal layout, and letting one claim its row would
+            # reject whatever field legitimately owns that cell.
+            if not is_checkbox:
+                placed.setdefault(page, []).append(f["bbox"])
 
         f.setdefault("backend", {"kind": "overlay"})
+        if is_checkbox:
+            f["backend"]["mark"] = "checkbox"
+        # How the box is divided into character cells, where it is. Only useful
+        # on a box we actually took from a region — a snapped or estimated one
+        # has no claim to a comb it never matched.
+        if region and region.get("comb") and f["bbox_source"] == "region":
+            f["backend"]["comb"] = region["comb"]
 
     if rejected:
         log.warning("%d of %d fields could not be placed and need a person", rejected, len(fields))

@@ -40,7 +40,7 @@ Globals:
     MemorySize: 1024
     Timeout: 30
     Tracing: Active
-    Layers: [!Ref DepsLayer]
+    Layers: [!Ref DepsLayer, !Ref FontsLayer]
     Environment:
       Variables:
         TABLE_NAME: !Ref Table
@@ -171,6 +171,23 @@ Resources:
       CompatibleArchitectures: [x86_64]
     Metadata:
       BuildMethod: python3.12
+
+  # Hebrew and Arabic values stamped onto a flat PDF need a real TTF: reportlab's
+  # built-in fonts have no glyphs for either, and api_render falls back to
+  # Helvetica when it cannot load one, which exports every Hebrew value as
+  # garbage. RTL_FONT_PATH points at /opt/fonts/NotoSansHebrew-Regular.ttf, and
+  # this is what puts it there.
+  #
+  # Deliberately a second layer rather than a file dropped into layer/. DepsLayer
+  # is built with BuildMethod python3.12, which pip-installs requirements.txt
+  # into python/ and keeps nothing else from the directory — a font added there
+  # would vanish at build time. With no Metadata block this one is zipped as-is.
+  FontsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: fonts-layer/
+      CompatibleRuntimes: [python3.12]
+      CompatibleArchitectures: [x86_64]
 
   # --------------------------------------------------------------------- api
   Api:

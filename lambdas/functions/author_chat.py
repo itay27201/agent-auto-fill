@@ -76,6 +76,11 @@ def _turn(body: dict, send) -> None:
 
     fields = load_schema(entry["schema_key"])
     guide = cat.load_guide(entry.get("guide_key")) or gd.empty({"catalog_id": cid})
+    user_text = (body.get("message") or "").strip()
+    if not user_text:
+        send("error", {"message": "message is empty"})
+        return
+
     actx = at.AuthorContext(cid=cid, entry=entry, fields=fields, guide=guide, emit=send)
 
     system = [
@@ -88,7 +93,7 @@ def _turn(body: dict, send) -> None:
     # The browser holds the transcript: without a session record to key one
     # off, replaying it is what keeps a multi-turn sitting coherent.
     messages = _history(body.get("history") or [])
-    messages.append({"role": "user", "content": [{"text": (body.get("message") or "").strip()}]})
+    messages.append({"role": "user", "content": [{"text": user_text}]})
 
     send("turn_start", {"catalog_id": cid})
     loop.run_turn(

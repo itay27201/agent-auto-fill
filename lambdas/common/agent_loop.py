@@ -26,13 +26,79 @@ log = logging.getLogger()
 log.setLevel(logging.INFO)
 
 
+def _usable(block: dict) -> bool:
+    """Whether Bedrock will accept this content block. An empty or
+    whitespace-only text block is rejected outright — and because the filling
+    agent's transcript is durable, one written to DynamoDB poisons every
+    later turn of that session, not just the turn that produced it."""
+    if "text" in block:
+        return bool((block.get("text") or "").strip())
+    return True
+
+
+def sanitize(messages: list[dict]) -> list[dict]:
+    """Drop anything Converse would reject, without changing what was said.
+
+    Applied on the way *in* rather than only at the point of writing, because
+    a transcript that already contains a bad block has to keep working: the
+    session is stored, the damage outlives the bug, and there is no migration
+    path to a DynamoDB item a user cannot see.
+
+    Removes empty text blocks, tool results whose call is no longer in the
+    window (`recent_messages` slices by count, not by tool cycle), and a
+    trailing tool call nothing answered. Runs of the same role are then
+    merged, since dropping a message whole would otherwise leave two user
+    turns adjacent, which Converse also rejects.
+    """
+    called: set[str] = set()
+    kept: list[dict] = []
+
+    for m in messages:
+        content = []
+        for b in m.get("content") or []:
+            if "toolResult" in b:
+                if b["toolResult"].get("toolUseId") not in called:
+                    continue
+            elif "toolUse" in b:
+                called.add(b["toolUse"].get("toolUseId"))
+            elif not _usable(b):
+                continue
+            content.append(b)
+        if content:
+            kept.append({**m, "content": content})
+
+    merged: list[dict] = []
+    for m in kept:
+        if merged and merged[-1]["role"] == m["role"]:
+            merged[-1] = {**merged[-1], "content": merged[-1]["content"] + m["content"]}
+        else:
+            merged.append(m)
+
+    answered = {b["toolResult"].get("toolUseId")
+                for m in merged for b in m["content"] if "toolResult" in b}
+    while merged and any("toolUse" in b and b["toolUse"].get("toolUseId") not in answered
+                         for b in merged[-1]["content"]):
+        merged.pop()
+
+    while merged and merged[0]["role"] != "user":
+        merged.pop(0)
+
+    if len(merged) != len(messages):
+        log.info("sanitize: %d message(s) dropped from history", len(messages) - len(merged))
+    return merged
+
+
 def stream_once(messages: list[dict], system: list[dict], tool_config: dict, send) -> tuple[dict, str]:
     """One Converse stream. Returns the assembled assistant message and the
-    stop reason. Text deltas are pushed to the client as they arrive."""
+    stop reason. Text deltas are pushed to the client as they arrive.
+
+    The returned message may have empty `content`: a stream can end without
+    producing a usable block, and inventing one to fill the gap is what broke
+    sessions before. The caller decides what to do about it."""
     resp = bedrock().converse_stream(
         modelId=config.BEDROCK_MODEL_ID,
         system=system,
-        messages=messages,
+        messages=sanitize(messages),
         toolConfig=tool_config,
         inferenceConfig={"maxTokens": config.MAX_TOKENS, "temperature": 0.2},
     )
@@ -63,7 +129,7 @@ def stream_once(messages: list[dict], system: list[dict], tool_config: dict, sen
                     current["toolUse"]["input"] = json.loads(tool_json) if tool_json else {}
                 except json.JSONDecodeError:
                     current["toolUse"]["input"] = {}
-            if current:
+            if current and _usable(current):
                 content.append(current)
             current, tool_json = None, ""
 
@@ -74,7 +140,7 @@ def stream_once(messages: list[dict], system: list[dict], tool_config: dict, sen
             usage = ev["metadata"].get("usage", {})
             log.info("usage: %s", json.dumps(usage))
 
-    return {"role": "assistant", "content": content or [{"text": ""}]}, stop
+    return {"role": "assistant", "content": content}, stop
 
 
 def run_turn(
@@ -101,9 +167,25 @@ def run_turn(
 
     for _ in range(limit):
         reply, stop = stream_once(messages, system, tool_config, send)
+        if not reply["content"]:
+            # An empty turn is nearly always transient, so it is worth one
+            # more try before bothering the person. What it must never do is
+            # get written down: a placeholder block in a stored transcript
+            # fails every subsequent turn of the session, not just this one.
+            log.info("empty assistant turn (stop=%s); retrying once", stop)
+            reply, stop = stream_once(messages, system, tool_config, send)
+        if not reply["content"]:
+            send("warning", {"message": "the assistant did not reply — please send that again"})
+            return added
+
         messages.append(reply)
         added.append(reply)
         persist("assistant", reply["content"])
+
+        if stop == "max_tokens":
+            # Otherwise a truncated reply is indistinguishable from the agent
+            # simply having finished talking.
+            send("warning", {"message": "the reply was cut off at the length limit"})
 
         if stop != "tool_use":
             return added

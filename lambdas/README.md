@@ -157,6 +157,15 @@ markdown, so the page re-renders live), `turn_end`, `error`.
 separate step. This is why the same agent works across PDF, DOCX, fillable
 and flat.
 
+**The transcript is durable, so it is normalized on read as well as on
+write.** A filling session stores its messages and replays them into Converse
+every turn, which means one block Bedrock rejects — an empty text block, a
+tool result whose call fell out of the window — kills not the turn that wrote
+it but every turn after it, permanently. `agent_loop.sanitize` runs over the
+history before each call, so a transcript damaged by an older bug keeps
+working; nothing empty is ever persisted in the first place. An empty stream
+is retried once and then reported, never papered over with invented text.
+
 **Every write carries a source.** `user_said`, `profile`, or `source_doc` —
 there is no `inferred`. Values written by the agent land unconfirmed and
 `validate` blocks export until the user confirms them. On an official form
@@ -215,9 +224,10 @@ python3 tests/test_roundtrip.py     # build a fillable PDF, extract, fill, verif
 python3 tests/test_tools.py         # filling tools: source + evidence enforcement
 python3 tests/test_author_tools.py  # authoring tools: basis + citation enforcement
 python3 tests/test_guide.py         # guide parse/render round-trip, prompt budget
+python3 tests/test_agent_loop.py    # streaming loop: nothing invalid is sent or stored
 ```
 
-All four run without AWS credentials.
+All five run without AWS credentials.
 
 ## Not done yet
 

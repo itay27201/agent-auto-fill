@@ -33,7 +33,11 @@ BEDROCK_REGION = os.environ.get("BEDROCK_REGION", os.environ.get("AWS_REGION", "
 BEDROCK_READ_TIMEOUT = int(os.environ.get("BEDROCK_READ_TIMEOUT", "300"))
 
 MAX_AGENT_TURNS = int(os.environ.get("MAX_AGENT_TURNS", "8"))
-MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "4096"))
+# Generous on purpose. Only tokens actually generated are billed, so a high
+# ceiling costs nothing on a normal turn — but a reply truncated mid-tool-call
+# loses the tool block entirely, and Hebrew runs 2-3x more tokens than English
+# for the same text, so 4096 was close enough to the edge to matter.
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "16384"))
 
 # ---------------------------------------------------------------- ingest
 INGEST_STATE_MACHINE_ARN = os.environ.get("INGEST_STATE_MACHINE_ARN", "")

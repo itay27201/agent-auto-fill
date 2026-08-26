@@ -77,6 +77,13 @@ def _turn(body: dict, send) -> None:
         send("error", {"message": "session is not ready"})
         return
 
+    # The page will not send a blank message, but the socket is reachable
+    # without it. Refusing here keeps an empty text block out of the stored
+    # transcript, where Bedrock would reject it on every turn that followed.
+    if not user_text:
+        send("error", {"message": "message is empty"})
+        return
+
     fields = sch.schema_from_list(load_schema(sess["schema_key"]))
     values = get_values(sid)
     actor = body.get("actor") or sess.get("owner", "anonymous")
@@ -104,7 +111,11 @@ def _turn(body: dict, send) -> None:
         {"text": _recent_changes(sid)},
     ]
 
-    messages = recent_messages(sid, limit=20)
+    # A few more than we need: the window is sliced by message count, so it
+    # can open in the middle of a tool cycle. `sanitize` in the loop prunes
+    # the orphaned blocks at the edge, and the spare messages mean that trim
+    # costs context we were not going to keep anyway.
+    messages = recent_messages(sid, limit=24)
     messages.append({"role": "user", "content": [{"text": user_text}]})
     append_message(sid, "user", [{"text": user_text}])
 

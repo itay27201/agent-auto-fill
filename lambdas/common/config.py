@@ -99,7 +99,14 @@ MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "16384"))
 #      real columns instead of one box spanning several; checkbox glyphs are
 #      writing areas rather than printed text; boxes printed as character cells
 #      carry a comb; Textract may subdivide a region the PDF read too wide
-SCHEMA_VERSION = int(os.environ.get("SCHEMA_VERSION", "3"))
+#   4  a long rule no longer absorbs a short one a point away, so a box whose
+#      underline sits just above a section frame is found at all; a box printed
+#      under a caption carries that caption as `own_label`, so the model names it
+#      from the document rather than from whatever is printed nearest it; a
+#      model-estimated bbox on a page that has regions is refused instead of
+#      stamped; and a printed tick square is typed as a mark rather than as
+#      whatever the model called it
+SCHEMA_VERSION = int(os.environ.get("SCHEMA_VERSION", "4"))
 
 INGEST_STATE_MACHINE_ARN = os.environ.get("INGEST_STATE_MACHINE_ARN", "")
 RASTER_DPI = int(os.environ.get("RASTER_DPI", "150"))

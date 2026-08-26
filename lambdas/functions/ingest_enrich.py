@@ -89,13 +89,16 @@ FLAT_TASK = """This document has no form fields. The page has been scanned for t
 
 Identify every input a person must complete on THIS PAGE, and give each one the `region_id` of the box it should be written into.
 
-- Read the region id off the image, and check it against the `nearby_text` in the list. A region whose nearby text is the label you have in mind is the right region.
+- Read the region id off the image, and check it against the list below.
+- A region with an `own_label` is a box printed directly underneath that caption, read out of the document itself. It is not a guess and it outranks `nearby_text` and the image: if you are looking for the field captioned X, the region whose `own_label` is X is that field, full stop.
+- `nearby_text` is only what happens to be printed around a box. On a table row it frequently names the column *beside* this one, so use it to break a tie, never to overrule an `own_label`.
 - Some regions carry a `textract_label`: a form-reader's guess at which printed label that box belongs to. Treat it as a strong hint, not as fact — it is often right and is occasionally attached to the wrong box, so confirm it against the image before you trust it, and ignore it when the image disagrees.
 - On a right-to-left form the label is usually the text to the RIGHT of, or directly ABOVE, the box that belongs to it.
 - A region marked `"kind": "checkbox"` is one of the form's printed tick squares. It takes an X, never text, so the field that claims it must be "checkbox" — or, where several of them are the mutually exclusive answers to one question, one "select" field whose options are those choices. Its `nearby_text` is the choice it stands for.
 - A region with `character_cells` is printed as that many separate boxes, one character each. Use it to type the field and to set `max_length`: nine cells beside a label about identity is a 9-digit id, eight is usually a date.
 - Do NOT return coordinates. `region_id` is the only way to place a field.
-- If a person clearly must write somewhere that has no region, set `"region_id": null` and give an approximate `"bbox": [x0, y0, x1, y1]` normalized 0..1 from the top-left instead. Use this sparingly — a field with no box is handled gracefully downstream, a field in the wrong box is not.
+- `region_id` is mandatory while this page has any regions at all. If none of them looks right, pick the closest and say why in `help`, or omit the field — do NOT invent a bbox. An estimated box on a page that has regions is rejected downstream and the field arrives unplaced, so guessing buys nothing and costs the person a correct answer in the wrong cell.
+- Only when the region list below is empty may you give an approximate `"bbox": [x0, y0, x1, y1]` normalized 0..1 from the top-left.
 - Every field must be on this page. Set "page" to the page number given below.
 
 Regions on this page:
@@ -272,6 +275,12 @@ def _slim_regions(regions: list[dict], page_no: int) -> dict:
     out = []
     for r in regions:
         item = {"region_id": r["region_id"], "nearby_text": r.get("nearby_text") or []}
+        if r.get("own_label"):
+            # The caption printed directly above this box, read off the page. The
+            # one identifier here that is not a guess — `nearby_text` is whatever
+            # happens to be near, and on a table row that is usually the column
+            # beside this one.
+            item["own_label"] = r["own_label"]
         if r.get("is_checkbox"):
             # The one thing about a region the model cannot reliably read off the
             # image: at this size a tick box and a full stop look alike, and the
@@ -387,12 +396,25 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
         if not reason and is_checkbox and f.get("type") in ("select", "multiselect") \
                 and not option_boxes:
             reason = "its printed choices could not be told apart"
-        # An estimate on a page with no text and no rules cannot be checked by
-        # anything: `sanity_check` has nothing to measure it against, so it would
-        # pass by default and be stamped onto the form. A box nobody can verify
-        # is exactly what the rest of this refuses to draw.
-        if not reason and f["bbox_source"] == "estimated" and not page_text and not regions:
-            reason = "estimated on a page with no geometry to check it against"
+        # A box the model invented rather than chose. `bbox_confidence` grades it
+        # "estimated", and nothing anywhere reads that value — every consumer, the
+        # renderer included, tests only for "low" — so without this it is stamped,
+        # counted as placed and drawn exactly like a box read out of the PDF.
+        #
+        # On a page that produced regions, an estimate means the model failed to
+        # identify the box, which is not a licence to place it approximately. On a
+        # page with no text and no rules there is nothing better to be had, but
+        # `sanity_check` also has nothing to measure it against, so it would pass
+        # by default. A box nobody can verify is what the rest of this refuses to
+        # draw. Either way the field keeps everything but its geometry and waits
+        # for a person.
+        if not reason and f["bbox_source"] == "estimated":
+            available = len(page_regions.get(page, []))
+            if available:
+                reason = ("the model estimated this box instead of choosing one "
+                          f"of the {available} regions found on this page")
+            elif not page_text and not regions:
+                reason = "estimated on a page with no geometry to check it against"
 
         if reason:
             rejected += 1

@@ -156,6 +156,43 @@ def test_place_resolves_a_region_id_and_never_trusts_a_coordinate():
     assert all("region_id" not in f for f in placed.values()), "region ids are internal"
 
 
+def test_an_estimated_box_on_a_page_that_has_regions_is_refused():
+    """The amplifier that put values on the page.
+
+    `_place` graded an estimate `bbox_confidence: "estimated"`, and nothing reads
+    that value — every consumer, the renderer included, tests only for `"low"`.
+    So a box the model invented was stamped, counted as placed and drawn in the
+    viewer exactly like one read out of the PDF's own geometry.
+
+    A page that produced regions and a model that used none of them has failed to
+    identify the box. That is not a licence to place it approximately: an unplaced
+    field is visibly unplaced, and a misplaced one looks finished.
+
+    The estimate here is deliberately somewhere harmless — blank paper, well clear
+    of the form's printing and of every region — so that `sanity_check` has no
+    complaint of its own and this rule is the only thing that can refuse it.
+    """
+    page = _page()
+    regions = geo.candidate_regions(page)
+    pages = [{"page": 1, "regions": regions, "text": geo.text_boxes(page)}]
+
+    guessed = [{"field_id": "guessed", "label": "שם", "page": 1,
+                "bbox": [0.10, 0.40, 0.30, 0.43]}]
+    placed = _place(guessed, pages)[0]
+
+    assert placed["bbox_source"] == "estimated", placed["bbox_source"]
+    assert placed["bbox_confidence"] == "low"
+    assert str(len(regions)) in placed["bbox_note"], placed["bbox_note"]
+    assert placed["bbox"] == [0.0, 0.0, 0.0, 0.0]
+
+    # With no geometry anywhere there is nothing better to offer, so the older
+    # reason still stands and the wording stays honest about which case it is.
+    alone = _place([{"field_id": "g2", "label": "x", "page": 1,
+                     "bbox": [0.10, 0.40, 0.30, 0.43]}], [])[0]
+    assert alone["bbox_confidence"] == "low"
+    assert "no geometry" in alone["bbox_note"], alone["bbox_note"]
+
+
 def test_describe_position_says_which_box_in_words():
     """`agent_view` drops geometry on purpose — pixel coordinates are not what a
     language model reasons with. "row 1, 2nd box from the right" is."""
@@ -397,6 +434,76 @@ def test_the_employee_row_reconstructs_five_columns():
         assert r["bbox"][2] - r["bbox"][0] < 0.25, r["bbox"]
 
 
+def test_a_long_rule_does_not_swallow_a_short_one_a_point_away():
+    """`שנת המס` had no region at all — not a wrong one, none.
+
+    Its underline (y=0.1177, 0.110 wide) sits 3.1pt above the instructions frame
+    below it (y=0.1214, 0.859 wide). `_collinear` grouped by `_MERGE_TOL`, 3.4pt,
+    so the two counted as one line, `_merge` extended the frame across the
+    underline and deleted it, and with no bottom rule `_underlines` never
+    produced a box. The model was offered nothing and estimated one instead.
+
+    `_MERGE_TOL` is right for what it does elsewhere — clustering grid positions.
+    Deciding whether two drawn lines are the same line is a different question.
+    """
+    src = Path(__file__).resolve().parents[2] / "Service_Pages_Income_tax_annual-report-2024_itc101.pdf"
+    if not src.exists():
+        print("     (skipped: the 101 PDF is not in the repo root)")
+        return
+
+    page = pdfium.PdfDocument(src.read_bytes())[0]
+    regions = geo.candidate_regions(page)
+
+    tax_year = [r for r in regions if 0.09 < r["bbox"][1] < 0.13]
+    assert len(tax_year) == 1, [r["bbox"] for r in tax_year]
+    assert tax_year[0]["found_by"] == "rule"
+    # Four cells, because a tax year is four digits.
+    assert tax_year[0]["comb"]["cells"] == 4, tax_year[0].get("comb")
+
+    # The tolerance is tight enough to keep that rule and still loose enough for
+    # the case merging exists for: a stroke plus a fill edge a fifth of a point
+    # apart is one border, not two lines with a hairline cell between them.
+    assert geo._COLLINEAR_TOL < 0.0037, "the gap that swallowed the tax-year box"
+    one = geo._merge([[0.1, 0.1000, 0.5, 0.1000], [0.1, 0.1002, 0.5, 0.1002]], axis=1)
+    assert len(one) == 1, one
+
+
+def test_a_box_printed_under_a_caption_carries_that_caption():
+    """`own_label` — what the document calls this box, not what sits near it.
+
+    Section ב's five columns are found correctly and still received the wrong
+    values, because `nearby_text` is all the enrich prompt had to identify them
+    with. For `שם משפחה` it reads `תאריך לידה` then `תאריך עליה` — two *other*
+    columns, reported as "left" at a distance of 0.001 — before the box's own
+    caption above it. The model concluded the region was not the surname box and
+    took the prompt's estimated-bbox escape hatch.
+
+    `_under_label` already had the answer: the text it measures to find where the
+    writing space starts is the caption. It is read off the page, so it is not a
+    guess, and it outranks anything merely printed nearby.
+    """
+    src = Path(__file__).resolve().parents[2] / "Service_Pages_Income_tax_annual-report-2024_itc101.pdf"
+    if not src.exists():
+        print("     (skipped: the 101 PDF is not in the repo root)")
+        return
+
+    page = pdfium.PdfDocument(src.read_bytes())[0]
+    regions = geo.candidate_regions(page)
+
+    band = [r for r in regions if r["bbox"][3] > 0.25 and r["bbox"][1] < 0.29]
+    assert [r["own_label"] for r in band] == [
+        "מספר זהות ( 9 ספרות)", "שם משפחה", "שם פרטי", "תאריך לידה", "תאריך עליה"]
+
+    # Only a box printed under its caption can have one; a bare ruled cell has
+    # nothing to read, and must not inherit the previous region's label.
+    for r in regions:
+        assert bool(r.get("own_label")) == (r["found_by"] == "under_label"), r
+
+    # A caption is a caption, not a paragraph: `_under_label` already refuses a
+    # cell whose text runs deep, so nothing here is anywhere near the 80-char cap.
+    assert max(len(r["own_label"]) for r in band) < 80
+
+
 def test_checkbox_glyphs_are_writing_areas():
     """The 61 tick squares on the real 101 are ZapfDingbats glyphs, so every test
     in this module used to read them as the form's own printing and throw them
@@ -478,15 +585,28 @@ def test_sanity_check_does_not_reject_a_checkbox_for_being_a_checkbox():
 
 def test_a_label_inside_its_own_cell_still_yields_a_writing_area():
     """Sections א, ב and ו of the 101 print the label in the top corner of the
-    box you write in. Rejecting every cell that contains text loses all of them."""
+    box you write in. Rejecting every cell that contains text loses all of them.
+
+    The label itself comes back with the box. It is the text the function already
+    had to measure to find where the writing space starts, and it is the document
+    stating what this box is called — see `own_label` below.
+    """
     cell = [0.70, 0.10, 0.90, 0.16]
     label = [{"bbox": [0.71, 0.105, 0.78, 0.118], "text": "שם"}]
     assert not geo._is_blank(cell, label)
 
-    below = geo._under_label(cell, label)
-    assert below is not None
+    got = geo._under_label(cell, label)
+    assert got is not None
+    below, caption = got
     assert below[1] > 0.118, "starts under the label, not on it"
     assert below[3] == 0.16 and below[0] == 0.70
+    assert caption == "שם", caption
+
+    # Right-to-left, so a caption split into fragments reassembles rightmost
+    # first. Left to its own order it reads backwards.
+    split = [{"bbox": [0.80, 0.105, 0.88, 0.118], "text": "מספר"},
+             {"bbox": [0.71, 0.105, 0.79, 0.118], "text": "זהות"}]
+    assert geo._under_label(cell, split)[1] == "מספר זהות"
 
     # Text running deep into the cell is a paragraph or a filled-in value.
     deep = [{"bbox": [0.71, 0.105, 0.88, 0.155], "text": "a whole paragraph"}]

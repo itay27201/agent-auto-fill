@@ -319,10 +319,14 @@ def _collinear(lines: list[list[float]], axis: int) -> list[list[list[float]]]:
     rules a tolerance apart cannot chain into one group that drifts across a real
     column boundary. That matches what the old `prev[axis]` comparison did, which
     was the one part of it worth keeping.
+
+    The tolerance is `_COLLINEAR_TOL`, not `_MERGE_TOL`. Grouping by the coarser
+    one made a short rule and a long rule 3.1pt apart the same line, and `_merge`
+    then extended the long one over the short one and deleted it.
     """
     groups: list[list[list[float]]] = []
     for line in sorted(lines, key=lambda b: b[axis]):
-        if groups and line[axis] - groups[-1][0][axis] <= _MERGE_TOL:
+        if groups and line[axis] - groups[-1][0][axis] <= _COLLINEAR_TOL:
             groups[-1].append(list(line))
         else:
             groups.append([list(line)])
@@ -424,6 +428,8 @@ def candidate_regions(page) -> list[dict]:
 
     regions = []
     for kind, bbox in found:
+        # Reset per region, or one inherits the previous region's caption.
+        caption = ""
         if not _is_blank(bbox, text):
             # Not empty — but on this kind of form that does not mean "not a
             # writing area". See `_under_label`.
@@ -432,10 +438,16 @@ def candidate_regions(page) -> list[dict]:
             below = _under_label(bbox, text)
             if below is None:
                 continue  # it holds the form's own text: a label, not a box
-            bbox, kind = below, "under_label"
+            bbox, caption = below
+            kind = "under_label"
         if any(intersection(bbox, r["bbox"]) / max(area(bbox), 1e-9) > 0.7 for r in regions):
             continue  # already covered by a region we kept
-        regions.append({"bbox": bbox, "found_by": kind})
+        region = {"bbox": bbox, "found_by": kind}
+        if caption:
+            # What the document itself calls this box, as opposed to whatever
+            # happens to be printed nearest it.
+            region["own_label"] = caption[:80]
+        regions.append(region)
 
     # Checkboxes are appended rather than run through the loop above, and are
     # deliberately exempt from both its tests. A tick box is never blank — it
@@ -725,7 +737,8 @@ def merge_regions(primary: list[dict], extra: list[dict]) -> list[dict]:
 
 
 def _under_label(bbox, text, min_free: float = 0.010):
-    """The writing space below a label printed inside its own cell, or None.
+    """The writing space below a label printed inside its own cell, and that
+    label, or None.
 
     Plenty of forms — the Israeli 101 among them — do not give labels a row of
     their own. `שם` is printed in the top corner of the very cell you write the
@@ -735,6 +748,11 @@ def _under_label(bbox, text, min_free: float = 0.010):
 
     The test is that the cell's text all hugs its top edge. Text running deeper
     than that is a paragraph or a filled-in value, and the cell is not offered.
+
+    The text that decides `lowest` *is* the box's caption, so it is returned
+    rather than thrown away. That is the document saying what this box is called,
+    which is a far better answer than `nearby_text` — on a table row the nearest
+    printing is routinely the heading of the column *beside* this one.
     """
     x0, y0, x1, y1 = bbox
     contents = [t for t in text
@@ -749,9 +767,13 @@ def _under_label(bbox, text, min_free: float = 0.010):
     free = y1 - lowest
     if free < min_free:
         return None
+    # Rightmost fragment first: these forms are right-to-left, and `text_boxes`
+    # splits `מספר זהות (9 ספרות)` into four pieces that only read as a caption
+    # in that order.
+    caption = " ".join(t["text"] for t in sorted(contents, key=lambda t: -t["bbox"][2]))
     # Start just below the label rather than flush against it, so a stamped
     # value does not collide with the form's own printing.
-    return [x0, round(lowest + free * 0.08, 5), x1, y1]
+    return [x0, round(lowest + free * 0.08, 5), x1, y1], " ".join(caption.split())
 
 
 def _is_blank(bbox, text) -> bool:

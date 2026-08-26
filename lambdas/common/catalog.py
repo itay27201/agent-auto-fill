@@ -132,6 +132,12 @@ def put(entry: dict) -> dict:
     transaction: the listing row is a derived view, and a torn write leaves a
     stale card, not a corrupt entry."""
     entry["updated_at"] = _now()
+    # Derived, not stored. `update()` is read-modify-write and `get()` decorates
+    # its result with these via `with_staleness` — without stripping them here,
+    # a read-time annotation gets persisted as if it were state, and an entry
+    # whose schema_version is current still says schema_stale forever.
+    entry.pop("schema_stale", None)
+    entry.pop("schema_stale_note", None)
     ddb().put_item(Item={"PK": f"CATALOG#{entry['catalog_id']}", "SK": "META", **entry})
     _index(entry)
     return _decimals_to_numbers(entry)

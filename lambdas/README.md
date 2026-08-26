@@ -225,9 +225,11 @@ python3 tests/test_tools.py         # filling tools: source + evidence enforceme
 python3 tests/test_author_tools.py  # authoring tools: basis + citation enforcement
 python3 tests/test_guide.py         # guide parse/render round-trip, prompt budget
 python3 tests/test_agent_loop.py    # streaming loop: nothing invalid is sent or stored
+python3 tests/test_guide_checks.py  # coverage counted in code, not asked of the model
+python3 tests/test_note_batch.py    # chunking, retries, and what a batch missed
 ```
 
-All five run without AWS credentials.
+All seven run without AWS credentials.
 
 ## Not done yet
 

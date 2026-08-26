@@ -10,9 +10,9 @@ Publishing refuses an empty guide. An entry whose whole value proposition is
 "we already know this form" should not reach the picker saying nothing about
 it — that is a worse experience than the upload flow it replaces.
 """
-from common import catalog as cat, guide as gd
+from common import catalog as cat, guide as gd, guide_checks as gchk
 from common.api import ApiError, body_of, handler, path_param
-from common.store import registry_store
+from common.store import load_schema, registry_store
 
 _META = ("name", "agency", "description", "language")
 
@@ -79,4 +79,19 @@ def lambda_handler(event, _context):
             catalog_id=cid, guide_key=updated.get("guide_key", ""),
         )
 
-    return {"catalog_id": cid, "entry": updated}
+    # The publish floor above only asks whether *anything* was written. That is
+    # deliberately low — some fields legitimately need no note, and deciding
+    # which is the author's call. But it published a guide covering 70 of 97
+    # fields without anyone being told, so the real numbers ride back with the
+    # response and the page confirms against them.
+    out = {"catalog_id": cid, "entry": updated}
+    # An entry always has a schema by the time it is editable, but a report is
+    # a courtesy — never fail the write someone asked for because the extra
+    # read behind it did.
+    if updated.get("schema_key"):
+        final = cat.load_guide(updated.get("guide_key")) or gd.empty()
+        report = gchk.check(final, load_schema(updated["schema_key"]),
+                            updated.get("language", ""))
+        out["report"] = report
+        out["summary"] = gchk.summary(report)
+    return out

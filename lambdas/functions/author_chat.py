@@ -17,7 +17,8 @@ itself — flushed to S3 after every write — is the durable artifact.
 import json
 import logging
 
-from common import agent_loop as loop, author_tools as at, catalog as cat, config, guide as gd
+from common import (agent_loop as loop, author_tools as at, catalog as cat, config,
+                    guide as gd, guide_checks as gchk)
 from common.aws import apigw_ws
 from common.store import load_schema
 
@@ -38,7 +39,8 @@ Nothing else. You may not use what you happen to know about this form, this agen
 How to work:
 - Start by asking what the form is and who files it, then read whatever they uploaded before writing anything.
 - Write section by section. Show the person what you wrote and ask before moving on.
-- Field notes are the highest-value part: they are what the filling agent shows someone who asks "what goes in this box?". Get the field_ids from get_field_list — never invent one.
+- Field notes are the highest-value part: they are what the filling agent shows someone who asks "what goes in this box?". Write them with write_field_notes, in one call, after the sections are settled — it covers every field that has no note yet and tells you what it missed. Never loop write_field_note over the whole form; that is what leaves a guide two-thirds written. Use the singular tool only to fix one note the person objected to.
+- write_field_notes returns a report. If it names missing fields, call it again — it will only fill the gap. Tell the person the real count, and never describe the notes as done while fields are still missing.
 - Write in the language of the form. Keep it plain — the reader is a member of the public, not an official.
 - Quantities, dates and legal references must be exact. If a source is ambiguous, say it is ambiguous rather than resolving it.
 - You never publish. The person reviews the draft and publishes it themselves. Say so once, when the guide is taking shape."""
@@ -74,13 +76,13 @@ def _turn(body: dict, send) -> None:
         send("error", {"message": "catalog entry not found"})
         return
 
-    fields = load_schema(entry["schema_key"])
-    guide = cat.load_guide(entry.get("guide_key")) or gd.empty({"catalog_id": cid})
     user_text = (body.get("message") or "").strip()
     if not user_text:
         send("error", {"message": "message is empty"})
         return
 
+    fields = load_schema(entry["schema_key"])
+    guide = cat.load_guide(entry.get("guide_key")) or gd.empty({"catalog_id": cid})
     actx = at.AuthorContext(cid=cid, entry=entry, fields=fields, guide=guide, emit=send)
 
     system = [
@@ -103,14 +105,19 @@ def _turn(body: dict, send) -> None:
         dispatch=lambda name, args: at.run_tool(name, args, actx),
         send=send,
     )
+    # One report rather than the ad-hoc pair this used to send: the page and
+    # the publish gate now read the same numbers the agent was given.
+    report = gchk.check(actx.guide, fields, entry.get("language", ""))
     send("turn_end", {
         "catalog_id": cid,
         "markdown": gd.render(actx.guide),
         "guide": actx.guide,
-        "empty_sections": [s for s in gd.SECTIONS
-                           if not ((actx.guide.get("sections") or {}).get(s) or "").strip()],
-        "field_notes": len(actx.guide.get("field_notes") or {}),
-        "field_count": len(fields),
+        "report": report,
+        "summary": gchk.summary(report),
+        # Kept for the fields the page already reads off this frame.
+        "empty_sections": report["empty_sections"],
+        "field_notes": report["noted"],
+        "field_count": report["total"],
     })
 
 

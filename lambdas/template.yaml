@@ -653,11 +653,21 @@ Resources:
       CodeUri: .
       Handler: functions/author_chat.lambda_handler
       MemorySize: 1024
-      Timeout: 300
+      # 900s, the Lambda maximum. write_field_notes fans a long form out over
+      # several parallel vision calls inside ONE tool call, so a single turn
+      # here legitimately runs for minutes. Nothing is waiting on the response:
+      # the WebSocket handler pushes frames with post_to_connection and returns
+      # 200 immediately, so this bounds the work, not a client's patience.
+      Timeout: 900
       Environment:
         Variables:
           WS_ENDPOINT: !Sub "https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
           ARTIFACTS_BUCKET: !Ref ArtifactsBucket
+          # Higher than the filling agent's 8 because writing a guide is a
+          # sitting, not an exchange. Not much higher: batching the field notes
+          # is what removed the need for a big number, and a large cap mostly
+          # buys the freedom to thrash for a quarter of an hour before failing.
+          MAX_AGENT_TURNS: "16"
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }

@@ -13,7 +13,8 @@ import { waitForConfig, isConfigured, showUnavailableNotice } from "./config.js"
 import { createApi, uploadToS3 } from "./api.js";
 import { createWsClient } from "./ws-client.js";
 import { initUpload } from "./upload.js";
-import { setMarkdown, escapeHtml } from "./md.js";
+import { createActivityLog } from "./activity.js";
+import { setMarkdown } from "./md.js";
 
 const POLL_START_MS = 1500;
 const POLL_MAX_MS = 5000;
@@ -39,6 +40,8 @@ let history = [];       // [{role, text}] — replayed to the agent each turn
 let ws = null;
 let streamingBubble = null;
 let editing = false;
+let report = null;      // the latest guide_checks report, for the publish gate
+let activity = null;    // the collapsing tool-activity rows
 
 // --------------------------------------------------------------- step 1
 
@@ -112,11 +115,13 @@ el("create-entry").addEventListener("click", async () => {
 
 function startGuideStep() {
   show("guide");
+  activity = createActivityLog(el("chat-log"));
   markdown = entry.guide_markdown || "";
-  renderGuide();
+  report = entry.report || null;
+  renderGuide(entry);
   renderSources([]);
   connectAgent();
-  appendSystem(
+  activity.note(
     `Ready. This assistant writes the guide for "${entry.name}" — it cannot fill anyone's form, ` +
     `and it will not write anything it cannot trace to a document you upload or to something you tell it.`
   );
@@ -125,41 +130,35 @@ function startGuideStep() {
 function connectAgent() {
   ws = createWsClient(cfg.wsUrl, {
     onOpen: () => {},
-    onClose: () => appendSystem("Disconnected — reconnecting..."),
-    onSendFailed: (msg) => appendSystem(msg),
+    onClose: () => activity.note("Disconnected — reconnecting..."),
+    onSendFailed: (msg) => activity.note(msg),
     turn_start: () => {
       streamingBubble = null;
       setBusy(true);
     },
     text: (msg) => appendAssistantDelta(msg.delta || ""),
-    tool_start: (msg) => appendTool(describeTool(msg.name)),
+    tool_start: (msg) => activity.tool(msg.name),
+    tool_end: (msg) => activity.toolDone(msg.name, msg.ok !== false),
+    note_progress: (msg) => activity.progress("write_field_notes", msg.done, msg.total),
     guide_updated: (msg) => {
       markdown = msg.markdown || markdown;
       renderGuide();
     },
     turn_end: (msg) => {
       streamingBubble = null;
+      activity.settle();
       setBusy(false);
       if (msg.markdown) markdown = msg.markdown;
+      report = msg.report || report;
       renderGuide(msg);
     },
-    warning: (msg) => appendSystem(msg.message, "warn"),
+    warning: (msg) => activity.note(msg.message, "warn"),
     error: (msg) => {
-      appendSystem(msg.message || "Something went wrong.", "error");
+      activity.note(msg.message || "Something went wrong.", "error");
       setBusy(false);
     },
   });
 }
-
-const TOOL_LABELS = {
-  list_sources: "checking what you uploaded",
-  read_source: "reading a reference document",
-  get_field_list: "looking at the form's fields",
-  read_guide: "re-reading the guide",
-  write_section: "writing a section",
-  write_field_note: "writing a note on a field",
-};
-const describeTool = (name) => TOOL_LABELS[name] || `using ${name}...`;
 
 el("chat-send").addEventListener("click", sendMessage);
 el("chat-input").addEventListener("keydown", (e) => {
@@ -205,8 +204,9 @@ el("source-input").addEventListener("change", async () => {
     await uploadToS3(upload_url, file, contentType);
     status.textContent = "";
     const fresh = await api.getCatalogEntry(entry.catalog_id);
+    report = fresh.report || report;
     renderSources(fresh.sources || []);
-    appendSystem(`Added ${file.name}. Ask the assistant to read it.`);
+    activity.note(`Added ${file.name}. Ask the assistant to read it.`);
   } catch (err) {
     status.textContent = err.message || "Upload failed.";
     status.classList.add("error");
@@ -249,8 +249,9 @@ el("save-source").addEventListener("click", async () => {
       guide_markdown: el("guide-source").value,
     });
     entry = res.entry;
+    report = res.report || report;
     markdown = el("guide-source").value;
-    renderGuide();
+    renderGuide(res);
     status.textContent = "Saved.";
   } catch (err) {
     status.textContent = err.message || "Could not save.";
@@ -266,17 +267,23 @@ function renderGuide(summary) {
     // Strip the frontmatter block: it is bookkeeping, not something to read.
     setMarkdown(target, markdown.replace(/^---\n[\s\S]*?\n---\n/, ""));
   }
-  if (summary) {
-    const done = (summary.field_count || 0) === 0 ? 0 : summary.field_notes || 0;
-    el("guide-progress").textContent =
-      `${done} of ${summary.field_count} fields noted` +
-      (summary.empty_sections?.length ? ` · ${summary.empty_sections.length} sections empty` : "");
-  }
+  // The server composes this line now, from the same report the publish gate
+  // and the agent were given — three places reading one set of numbers.
+  if (summary?.summary) el("guide-progress").textContent = summary.summary;
 }
 
 el("publish").addEventListener("click", async () => {
   const status = el("publish-status");
   status.classList.remove("error");
+
+  // Publishing a guide that covers two-thirds of the form is a real choice —
+  // plenty of fields need no note. It just must not happen by accident, which
+  // is exactly how a 70-of-97 guide reached the catalog looking finished.
+  if (!confirmIncomplete()) {
+    status.textContent = "";
+    return;
+  }
+
   status.textContent = "Publishing...";
   try {
     await api.updateCatalogEntry(entry.catalog_id, { status: "published" });
@@ -308,6 +315,9 @@ function appendMessage(role, text) {
 function appendAssistantDelta(delta) {
   if (!delta) return;
   if (!streamingBubble) {
+    // The agent has stopped calling tools and started talking, so whatever
+    // activity row was open is finished whether or not turn_end has landed.
+    activity.settle();
     streamingBubble = appendMessage("assistant", "");
     history.push({ role: "assistant", text: "" });
   }
@@ -316,20 +326,24 @@ function appendAssistantDelta(delta) {
   scrollChat();
 }
 
-function appendTool(text) {
-  const node = document.createElement("div");
-  node.className = "chat-msg tool";
-  node.textContent = text;
-  el("chat-log").appendChild(node);
-  scrollChat();
-}
-
-function appendSystem(text, kind = "info") {
-  const node = document.createElement("div");
-  node.className = kind === "error" ? "chat-msg system-error" : "chat-msg tool";
-  node.innerHTML = escapeHtml(text);
-  el("chat-log").appendChild(node);
-  scrollChat();
+/** True to go ahead. Silent when the guide is complete, or when there is no
+ * report yet to judge it by — an unknown state is not evidence of a gap. */
+function confirmIncomplete() {
+  if (!report || report.complete) return true;
+  const gaps = [];
+  if (report.counts?.missing) {
+    gaps.push(`${report.counts.missing} of ${report.total} fields have no note`);
+  }
+  if (report.empty_sections?.length) {
+    gaps.push(`${report.empty_sections.length} sections are empty ` +
+              `(${report.empty_sections.join(", ")})`);
+  }
+  if (!gaps.length) return true;
+  return window.confirm(
+    `${gaps.join(", and ")}.\n\n` +
+    `People will pick this form from the catalog and fill it using this guide. ` +
+    `Publish it as it is?`
+  );
 }
 
 function scrollChat() {

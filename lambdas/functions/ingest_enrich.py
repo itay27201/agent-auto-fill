@@ -13,12 +13,12 @@ Two prompts, one output shape:
   pdf_flat      no structure at all. The model reads the page images and
                 returns the full field list with normalized bboxes.
 """
-import base64
 import json
 import logging
 
 from common import config
-from common.aws import bedrock, s3
+from common.aws import s3
+from common.llm_json import invoke_json
 from common.store import update_session
 
 log = logging.getLogger()
@@ -91,7 +91,7 @@ def lambda_handler(event, _context):
     else:
         content.append({"text": FLAT_TASK})
 
-    fields = _invoke(content)
+    fields = invoke_json(SYSTEM, content, config.ENRICH_MAX_TOKENS)
 
     if doc_type == "pdf_acroform" and candidates:
         fields = _reconcile(candidates, fields)
@@ -100,60 +100,6 @@ def lambda_handler(event, _context):
     update_session(sid, progress="finalizing")
     log.info("enriched to %d fields", len(fields))
     return {**event, "fields": fields}
-
-
-def _invoke(content: list[dict]) -> list[dict]:
-    """Streamed rather than a single converse().
-
-    Reading a multi-page form takes minutes, and a non-streaming call holds
-    the connection silent for all of it — long past botocore's read timeout,
-    which then kills the request mid-generation and retries the whole thing.
-    That is what left sessions stuck on "enriching" until the state machine
-    gave up 5 minutes later with ReadTimeoutError. Streaming means the
-    timeout only has to cover the gap between chunks, which is small no
-    matter how long the answer is.
-    """
-    resp = bedrock().converse_stream(
-        modelId=config.BEDROCK_MODEL_ID,
-        system=[
-            {"text": SYSTEM},
-            # Cache the system block: every document in a batch reuses it.
-            {"cachePoint": {"type": "default"}},
-        ],
-        messages=[{"role": "user", "content": content}],
-        inferenceConfig={"maxTokens": config.ENRICH_MAX_TOKENS, "temperature": 0},
-    )
-
-    parts, stop = [], ""
-    for ev in resp["stream"]:
-        if "contentBlockDelta" in ev:
-            delta = ev["contentBlockDelta"]["delta"]
-            if "text" in delta:
-                parts.append(delta["text"])
-        elif "messageStop" in ev:
-            stop = ev["messageStop"].get("stopReason", "")
-
-    if stop == "max_tokens":
-        # The JSON array is cut off mid-element, so _parse would fail with a
-        # decode error that says nothing about why. Long forms hit this: the
-        # ITC-101 income-tax form truncated at the old 8192-token budget on
-        # page two. Raise ENRICH_MAX_TOKENS rather than guessing at the tail.
-        raise ValueError(
-            f"model hit the {config.ENRICH_MAX_TOKENS}-token output budget after "
-            f"{len(''.join(parts))} chars — this form needs a larger ENRICH_MAX_TOKENS"
-        )
-    return _parse("".join(parts))
-
-
-def _parse(text: str) -> list[dict]:
-    t = text.strip()
-    if t.startswith("```"):
-        t = t.split("```")[1]
-        t = t[4:] if t.lower().startswith("json") else t
-    start, end = t.find("["), t.rfind("]")
-    if start == -1 or end == -1:
-        raise ValueError(f"no JSON array in model output: {text[:300]}")
-    return json.loads(t[start:end + 1])
 
 
 def _slim(candidates: list[dict]) -> list[dict]:

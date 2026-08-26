@@ -4,13 +4,16 @@
 
 import { state, onChange, applyFieldUpdate, clearSelection } from "./state.js";
 import { highlightField } from "./viewer.js";
+import { createActivityLog } from "./activity.js";
 
 let log, scopeChip, input, sendBtn, wsClient;
 let streamingBubble = null;
+let activity = null;
 
 export function initChat(els, ws) {
   ({ log, scopeChip, input, sendBtn } = els);
   wsClient = ws;
+  activity = createActivityLog(log);
 
   sendBtn.addEventListener("click", send);
   input.addEventListener("keydown", (e) => {
@@ -26,15 +29,16 @@ export function initChat(els, ws) {
 
 export function wsHandlers() {
   return {
-    onOpen: () => appendSystem("Connected."),
-    onClose: () => appendSystem("Disconnected — reconnecting..."),
-    onSendFailed: (msg) => appendSystem(msg),
+    onOpen: () => activity.note("Connected."),
+    onClose: () => activity.note("Disconnected — reconnecting..."),
+    onSendFailed: (msg) => activity.note(msg),
     turn_start: () => {
       streamingBubble = null;
       setBusy(true);
     },
     text: (msg) => appendAssistantDelta(msg.delta || ""),
-    tool_start: (msg) => appendTool(`using ${msg.name}...`),
+    tool_start: (msg) => activity.tool(msg.name),
+    tool_end: (msg) => activity.toolDone(msg.name, msg.ok !== false),
     field_updated: (msg) => {
       applyFieldUpdate(msg.field_id, {
         value: msg.value,
@@ -45,11 +49,12 @@ export function wsHandlers() {
     highlight: (msg) => highlightField(msg.field_id),
     turn_end: () => {
       streamingBubble = null;
+      activity.settle();
       setBusy(false);
     },
-    warning: (msg) => appendSystem(msg.message, "warn"),
+    warning: (msg) => activity.note(msg.message, "warn"),
     error: (msg) => {
-      appendSystem(msg.message || "Something went wrong.", "error");
+      activity.note(msg.message || "Something went wrong.", "error");
       setBusy(false);
     },
   };
@@ -80,24 +85,12 @@ function appendMessage(role, text) {
 
 function appendAssistantDelta(delta) {
   if (!delta) return;
-  if (!streamingBubble) streamingBubble = appendMessage("assistant", "");
+  if (!streamingBubble) {
+    // Tools are done for now — the agent is talking.
+    activity.settle();
+    streamingBubble = appendMessage("assistant", "");
+  }
   streamingBubble.textContent += delta;
-  log.scrollTop = log.scrollHeight;
-}
-
-function appendTool(text) {
-  const el = document.createElement("div");
-  el.className = "chat-msg tool";
-  el.textContent = text;
-  log.appendChild(el);
-  log.scrollTop = log.scrollHeight;
-}
-
-function appendSystem(text, kind = "info") {
-  const el = document.createElement("div");
-  el.className = kind === "error" ? "chat-msg system-error" : "chat-msg tool";
-  el.textContent = text;
-  log.appendChild(el);
   log.scrollTop = log.scrollHeight;
 }
 

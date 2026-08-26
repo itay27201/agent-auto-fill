@@ -49,6 +49,21 @@ MAX_INGEST_PAGES = int(os.environ.get("MAX_INGEST_PAGES", "20"))
 # of the ITC-101 income-tax form blew straight past 8192 and truncated.
 ENRICH_MAX_TOKENS = int(os.environ.get("ENRICH_MAX_TOKENS", "32000"))
 
+# ---------------------------------------------------------------- authoring
+# Field notes are written in chunks, not one tool call per field. 97 separate
+# calls is what blew the agent's turn budget and left a guide covering 70 of
+# 97 fields published as finished.
+#
+# Chunk size trades two failures against each other: too large and the answer
+# truncates (the reason ENRICH_MAX_TOKENS above is 32000), too small and the
+# fan-out pays the per-call overhead more often than it needs to. 15 notes at
+# ~200 chars each sits well inside NOTE_MAX_TOKENS.
+NOTE_CHUNK_SIZE = int(os.environ.get("NOTE_CHUNK_SIZE", "15"))
+NOTE_MAX_TOKENS = int(os.environ.get("NOTE_MAX_TOKENS", "8000"))
+# Bedrock throttling is the ceiling here, not CPU. Four in flight keeps a long
+# form under a minute without tripping the account's requests-per-minute quota.
+NOTE_CONCURRENCY = int(os.environ.get("NOTE_CONCURRENCY", "4"))
+
 # ---------------------------------------------------------------- misc
 SESSION_TTL_DAYS = int(os.environ.get("SESSION_TTL_DAYS", "7"))
 UPLOAD_URL_TTL = int(os.environ.get("UPLOAD_URL_TTL", "900"))

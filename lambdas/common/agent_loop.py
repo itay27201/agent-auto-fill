@@ -197,10 +197,16 @@ def run_turn(
             tu = block["toolUse"]
             send("tool_start", {"name": tu["name"]})
             out = dispatch(tu["name"], tu.get("input") or {})
+            failed = isinstance(out, dict) and bool(out.get("error"))
+            # Paired with tool_start so the client counts calls that actually
+            # finished. A model mid-batch has already emitted every tool_start
+            # for that turn, so counting those would run the progress display
+            # ahead of the work.
+            send("tool_end", {"name": tu["name"], "ok": not failed})
             results.append({"toolResult": {
                 "toolUseId": tu["toolUseId"],
                 "content": [{"json": out}],
-                "status": "error" if isinstance(out, dict) and out.get("error") else "success",
+                "status": "error" if failed else "success",
             }})
 
         tool_msg = {"role": "user", "content": results}
@@ -208,7 +214,12 @@ def run_turn(
         added.append(tool_msg)
         persist("user", results)
 
-    send("warning", {"message": "stopped after the maximum number of tool steps"})
+    # Everything the tools wrote is already persisted — they flush as they go —
+    # so this is a pause, not a loss. Saying which makes the difference between
+    # a person retrying from scratch and a person typing "continue".
+    send("warning", {"message": f"Paused after {limit} tool steps. Everything written so "
+                                f"far is saved — say \"continue\" to pick up where this "
+                                f"left off."})
     return added
 
 

@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import io
 
-from . import catalog as cat, config, guide as gd
+from . import catalog as cat, config, guide as gd, note_batch as nb
 from .aws import s3
 
-# What the model may cite as the origin of a sentence it wrote. No "general
-# knowledge" and no "inferred" — if it is neither in a source nor stated by the
-# author, the agent does not have it.
-VALID_BASIS = ("source_doc", "author_said", "form_itself")
+# Defined in guide.py, because note_batch enforces the same rule on the bulk
+# path and one tuple in two modules is how the two drift apart. Re-exported
+# here: this is where callers and tests have always looked for it.
+VALID_BASIS = gd.VALID_BASIS
 
 _BASIS_PROP = {
     "type": "string",
@@ -118,12 +118,40 @@ TOOL_SPECS = [
     },
     {
         "toolSpec": {
+            "name": "write_field_notes",
+            "description": (
+                "Write notes for many fields at once — this is how you do the "
+                "field notes. With no arguments it covers every field that has "
+                "no note yet, so calling it again after a partial run repairs "
+                "the gap instead of rewriting what is already there. It reads "
+                "the form's pages and the sections you have written, and "
+                "returns a report naming any field it missed. Do not loop over "
+                "write_field_note to do this; a hundred single calls is what "
+                "runs you out of turns partway through."
+            ),
+            "inputSchema": {"json": {
+                "type": "object",
+                "properties": {
+                    "section": {
+                        "type": "string",
+                        "description": "Only fields in this section of the form. "
+                                       "Rewrites their notes even if they have one.",
+                    },
+                    "field_ids": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Only these fields. Rewrites their notes.",
+                    },
+                },
+            }},
+        }
+    },
+    {
+        "toolSpec": {
             "name": "write_field_note",
             "description": (
-                "Attach guidance to one field. This is what the filling agent "
-                "shows a person who asks what a box wants, so write it for "
-                "someone who has never seen this form. Pass an empty string to "
-                "delete a note."
+                "Attach guidance to ONE field — for fixing a single note the "
+                "person objected to. Use write_field_notes for bulk work. Pass "
+                "an empty string to delete a note."
             ),
             "inputSchema": {"json": {
                 "type": "object",
@@ -300,6 +328,25 @@ def _t_write_field_note(args: dict, ctx: AuthorContext) -> dict:
     return {"ok": True, "field_id": fid, "awaiting_human_review": True}
 
 
+def _t_write_field_notes(args: dict, ctx: AuthorContext) -> dict:
+    """The bulk path. No `basis` argument: the batch writes from the form's own
+    pages and the sections already agreed with the author, and each note comes
+    back carrying its own basis rather than one blanket claim for ninety-seven
+    of them."""
+    def progress(done: int, total: int) -> None:
+        ctx.emit("note_progress", {"done": done, "total": total})
+        # The guide panel redraws per chunk too — watching the notes appear is
+        # most of what tells the author this is working.
+        ctx.emit("guide_updated", {"markdown": gd.render(ctx.guide), "guide": ctx.guide})
+
+    return nb.write_notes(
+        ctx,
+        field_ids=args.get("field_ids"),
+        section=args.get("section"),
+        progress=progress,
+    )
+
+
 _DISPATCH = {
     "list_sources": _t_list_sources,
     "read_source": _t_read_source,
@@ -307,4 +354,5 @@ _DISPATCH = {
     "read_guide": _t_read_guide,
     "write_section": _t_write_section,
     "write_field_note": _t_write_field_note,
+    "write_field_notes": _t_write_field_notes,
 }

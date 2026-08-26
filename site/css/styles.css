@@ -620,6 +620,40 @@ a:hover { text-decoration: underline; }
   font-style: italic;
   padding: 2px 4px;
 }
+/* An activity row stays put and rewrites itself as its count climbs, so it
+   opts out of the entry animation the conversation bubbles use — re-running
+   msg-in on every tick would make the log twitch. */
+.chat-msg.tool.activity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  animation: none;
+}
+.activity-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  /* Same spinner recipe as .status-line::before — one definition of "working"
+     across the app, and it already reads correctly against both panels. */
+  border: 2px solid var(--brand-soft);
+  border-top-color: var(--brand);
+  animation: spin 0.7s linear infinite;
+}
+.chat-msg.tool.done .activity-icon,
+.chat-msg.tool.failed .activity-icon {
+  border: 0;
+  animation: none;
+  /* The glyph carries the state; the ring was only ever the "still going"
+     signal. Line-height pins it to the same optical centre as the ring. */
+  font-style: normal;
+  font-size: 11px;
+  line-height: 11px;
+  text-align: center;
+}
+.chat-msg.tool.done .activity-icon::before { content: "✓"; color: var(--brand); }
+.chat-msg.tool.failed .activity-icon::before { content: "!"; color: var(--danger); font-weight: 700; }
+.chat-msg.tool.failed { color: var(--danger); }
 .chat-msg.system-error {
   align-self: center;
   color: var(--danger);

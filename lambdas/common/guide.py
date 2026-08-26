@@ -25,6 +25,16 @@ import re
 # Order matters: `render` writes sections in this order, and the authoring
 # agent is offered exactly these names. A fixed list is what makes the guide
 # sliceable — a free-form heading set would leave `prompt_block` guessing.
+# What may be cited as the origin of a sentence written into a guide. No
+# "general knowledge" and no "inferred" — if it is neither in a source nor
+# stated by the author, the agent does not have it.
+#
+# It lives here rather than beside the tool schema because two writers enforce
+# it now: `author_tools.write_field_note` one note at a time, and
+# `note_batch` a hundred at once. Writing in bulk is not a licence to skip it,
+# and a second copy of the tuple is how the two quietly drift apart.
+VALID_BASIS = ("source_doc", "author_said", "form_itself")
+
 SECTIONS = (
     "Overview",
     "Eligibility",

@@ -225,6 +225,14 @@ def _stamp_overlay(src: bytes, fields, values) -> tuple[bytes, list[str]]:
 
 
 def _draw_field(c, f, value, page_w, page_h, font):
+    # A choice printed as a row of tick squares: mark the one that was chosen,
+    # not the one the field happens to be anchored on. Without this the value
+    # would be written as text into a box a few points across.
+    options = (f.backend or {}).get("option_boxes")
+    if options:
+        _draw_choice(c, f, value, options, page_w, page_h)
+        return
+
     x0, y0, x1, y1 = f.bbox
     # bbox is normalized top-left origin; PDF user space is bottom-left.
     left = x0 * page_w
@@ -236,15 +244,7 @@ def _draw_field(c, f, value, page_w, page_h, font):
 
     if f.type == "checkbox":
         if value:
-            # The box here is the form's own printed square, a few points across,
-            # so the 7pt floor `size` carries for text would overflow it. Fit the
-            # X to the square and centre it on both axes rather than sitting it
-            # on a text baseline.
-            box_h, box_w = top - bottom, right - left
-            mark = max(3.0, min(size, box_h * 0.9, box_w * 0.9))
-            c.setFont("Helvetica-Bold", mark)
-            c.drawCentredString((left + right) / 2,
-                                bottom + (box_h - mark * 0.72) / 2, "X")
+            _draw_tick(c, f.bbox, page_w, page_h)
         return
 
     text = ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)
@@ -271,6 +271,44 @@ def _draw_field(c, f, value, page_w, page_h, font):
         c.drawRightString(right - 2, baseline, text)
     else:
         c.drawString(left + 2, baseline, text)
+
+
+def _draw_choice(c, f, value, options, page_w, page_h):
+    """Tick the square for each chosen option, and nothing otherwise.
+
+    A value that matches none of the printed choices is left unstamped and
+    logged. Writing it somewhere would be a guess at which square was meant,
+    and a wrongly ticked box on a tax form reads as a deliberate answer.
+    """
+    chosen = {str(v).strip() for v in (value if isinstance(value, list) else [value])
+              if v not in (None, "", True, False)}
+    if value is True and len(options) == 1:
+        chosen = {str(options[0].get("value"))}
+
+    hit = False
+    for option in options:
+        if str(option.get("value")).strip() in chosen:
+            _draw_tick(c, option["bbox"], page_w, page_h)
+            hit = True
+    if not hit:
+        log.warning("%s: %r is not one of the printed choices — not stamped",
+                    f.field_id, value)
+
+
+def _draw_tick(c, bbox, page_w, page_h):
+    """An X centred in one of the form's printed squares.
+
+    Sized to the square rather than to the text scale: these are a few points
+    across, so the 7pt floor `_draw_field` uses for writing would overflow one.
+    Centred on both axes rather than sitting on a text baseline.
+    """
+    x0, y0, x1, y1 = bbox
+    left, right = x0 * page_w, x1 * page_w
+    bottom, top = (1.0 - y1) * page_h, (1.0 - y0) * page_h
+    box_w, box_h = right - left, top - bottom
+    mark = max(3.0, min(11.0, box_h * 0.9, box_w * 0.9))
+    c.setFont("Helvetica-Bold", mark)
+    c.drawCentredString((left + right) / 2, bottom + (box_h - mark * 0.72) / 2, "X")
 
 
 def _draw_comb(c, text, comb, page_w, bottom, top, size, rtl) -> bool:

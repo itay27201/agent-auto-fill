@@ -573,6 +573,51 @@ def test_textract_may_subdivide_a_region_the_pdf_read_too_wide():
     assert len(kept) == 2 and any(r.get("is_checkbox") for r in kept)
 
 
+def test_a_select_gets_one_box_per_printed_choice():
+    """`מצב משפחתי` is five tick squares, but a field carries one bbox. Without a
+    box per choice, picking any option but the one the model anchored on stamps
+    the answer onto the wrong square — as text, because the type is "select"
+    rather than "checkbox", into a box nine thousandths of a page wide."""
+    from functions.ingest_enrich import _option_boxes, _place
+
+    def tick(x, label):
+        return {"bbox": [x, 0.332, x + 0.013, 0.341], "found_by": "checkbox",
+                "is_checkbox": True, "region_id": int(x * 1000),
+                "nearby_text": [{"side": "left", "text": label}]}
+
+    regions = [tick(0.723, "נשוי/אה"), tick(0.610, "גרוש/ה"), tick(0.823, "רווק/ה"),
+               tick(0.530, "אלמן/ה"), tick(0.450, "פרוד/ה")]
+    field = {"field_id": "employee_marital_status", "type": "select",
+             "options": ["רווק/ה", "נשוי/אה", "גרוש/ה", "אלמן/ה", "פרוד/ה"]}
+
+    boxes = _option_boxes(field, regions)
+    assert [b["value"] for b in boxes] == field["options"]
+    assert boxes[0]["bbox"][0] == 0.823 and boxes[1]["bbox"][0] == 0.723
+    assert len({tuple(b["bbox"]) for b in boxes}) == 5, "no square used twice"
+
+    # All or nothing: a partial map would stamp some choices correctly and drop
+    # the rest onto whatever square the field anchored on.
+    assert _option_boxes(field, regions[:3]) == []
+
+    # Two choices sharing a short prefix must not collapse onto one square.
+    kibbutz = {"field_id": "employee_kibbutz_member", "type": "select",
+               "options": ["לא", "כן, הכנסותיי ממעסיק זה מועברות לקיבוץ",
+                           "כן, הכנסותיי ממעסיק זה אינן מועברות לקיבוץ"]}
+    got = _option_boxes(kibbutz, [
+        tick(0.30, "לא"),
+        tick(0.50, "כן, הכנסותיי ממעסיק זה מועברות לקיבוץ"),
+        tick(0.70, "כן, הכנסותיי ממעסיק זה אינן מועברות לקיבוץ"),
+    ])
+    assert len({tuple(b["bbox"]) for b in got}) == 3, got
+
+    # And a select whose squares cannot all be found is refused, not left to
+    # stamp a choice as text into a tick box.
+    pages = [{"page": 1, "text": [], "regions": regions[:2]}]
+    placed = _place([{**field, "page": 1, "region_id": regions[0]["region_id"]}], pages)
+    assert placed[0]["bbox_confidence"] == "low"
+    assert "choices" in placed[0]["bbox_note"], placed[0]["bbox_note"]
+
+
 def test_the_real_form_reconstructs_its_boxes():
     """The bar that matters. Everything above is a synthetic page; this is the
     document that was being filled wrongly.

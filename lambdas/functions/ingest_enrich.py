@@ -342,11 +342,33 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
 
         f.pop("region_id", None)
 
+        f.setdefault("backend", {"kind": "overlay"})
+        option_boxes = []
+        if is_checkbox:
+            f["backend"]["mark"] = "checkbox"
+            # A select printed as a row of tick squares needs one box per
+            # choice. A field carries a single bbox, so without this, picking any
+            # option but the one the model anchored on stamps the answer onto the
+            # wrong square — and because the type is "select" rather than
+            # "checkbox", the renderer writes the choice as *text* into a box
+            # nine thousandths of a page wide. The AcroForm path has always had
+            # this as `backend.radio_options`; a printed radio group needs the
+            # same thing.
+            if f.get("type") in ("select", "multiselect"):
+                option_boxes = _option_boxes(f, page_regions.get(page, []))
+                if option_boxes:
+                    f["backend"]["option_boxes"] = option_boxes
+
         page_text = text.get(page, [])
         reason = geo.sanity_check(f["bbox"], page_text,
                                   others=placed.get(page, []),
                                   label=f.get("label", ""),
                                   is_checkbox=is_checkbox) if f.get("bbox") else "no box"
+        # A choice whose squares could not all be located would be stamped as
+        # text into one tick box. Refusing it is the honest outcome.
+        if not reason and is_checkbox and f.get("type") in ("select", "multiselect") \
+                and not option_boxes:
+            reason = "its printed choices could not be told apart"
         # An estimate on a page with no text and no rules cannot be checked by
         # anything: `sanity_check` has nothing to measure it against, so it would
         # pass by default and be stamped onto the form. A box nobody can verify
@@ -369,9 +391,6 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
             if not is_checkbox:
                 placed.setdefault(page, []).append(f["bbox"])
 
-        f.setdefault("backend", {"kind": "overlay"})
-        if is_checkbox:
-            f["backend"]["mark"] = "checkbox"
         # How the box is divided into character cells, where it is. Only useful
         # on a box we actually took from a region — a snapped or estimated one
         # has no claim to a comb it never matched.
@@ -381,6 +400,74 @@ def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
     if rejected:
         log.warning("%d of %d fields could not be placed and need a person", rejected, len(fields))
     return fields
+
+
+def _option_boxes(field: dict, page_regions: list[dict]) -> list[dict]:
+    """Which printed tick square each choice of a select belongs to.
+
+    Matched on the label beside each square, which `nearby_text` already
+    carries, so nothing new has to be inferred and no second model call is
+    needed. Same shape as the AcroForm path's `backend.radio_options`.
+
+    All or nothing. A partial map is worse than none: the choices it did find
+    would stamp correctly and the rest would land on whatever square the field
+    happened to anchor on, which looks like a filled form and is not one.
+    """
+    options = [o for o in (field.get("options") or []) if str(o).strip()]
+    if len(options) < 2:
+        return []
+
+    candidates = [r for r in page_regions if r.get("is_checkbox")]
+    out, used = [], set()
+    for option in options:
+        match = _match_option(str(option), candidates, used)
+        if match is None:
+            log.info("no tick square for %r on %s", option, field.get("field_id"))
+            return []
+        used.add(id(match))
+        out.append({"value": option, "bbox": match["bbox"]})
+    return out
+
+
+def _match_option(option: str, candidates: list[dict], used: set) -> dict | None:
+    """The tick square whose printed label is this choice.
+
+    Prefix matching in both directions, because the two texts are truncated at
+    different points: `nearby_text` caps each string at 60 characters, and a long
+    choice printed across two lines reaches here as only its first run.
+    """
+    want = _squash(option)
+    if not want:
+        return None
+
+    best, best_score = None, 0
+    for region in candidates:
+        if id(region) in used:
+            continue
+        for near in (region.get("nearby_text") or [])[:2]:
+            got = _squash(near.get("text", ""))
+            if not got:
+                continue
+            if got == want:
+                score = len(got) + 100          # exact wins outright
+            elif want.startswith(got) or got.startswith(want):
+                # Longer agreement is stronger evidence. Two choices on the same
+                # row can share a short prefix — the kibbutz question offers two
+                # that both begin "כן," — so a two-character overlap decides
+                # nothing and is not accepted on its own.
+                overlap = min(len(got), len(want))
+                score = overlap if overlap >= 3 else 0
+            else:
+                score = 0
+            if score > best_score:
+                best, best_score = region, score
+    return best
+
+
+def _squash(text: str) -> str:
+    """Comparable form: letters and digits only. Punctuation and spacing differ
+    between what the form prints and what the model wrote into `options`."""
+    return "".join(ch for ch in (text or "") if ch.isalnum())
 
 
 def _dedupe(fields: list[dict]) -> list[dict]:

@@ -603,7 +603,17 @@ Resources:
       Handler: functions/ingest_enrich.lambda_handler
       MemorySize: 2048
       Timeout: 900
-      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
+      # Longer than the 300s default, and only here. This is the one call that
+      # reasons over a whole page of regions at INGEST_EFFORT=high, and page one
+      # of the 101 carries 92 of them since checkbox glyphs became writing
+      # areas. Observed live: the page-one call went silent past 300s and the
+      # read timed out, which costs that page's fields -- a schema that came
+      # back with page two only. Safe against this function's 900s budget
+      # because the runtime client is configured for a single attempt.
+      Environment:
+        Variables:
+          ARTIFACTS_BUCKET: !Ref ArtifactsBucket
+          BEDROCK_READ_TIMEOUT: 600
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref ArtifactsBucket }

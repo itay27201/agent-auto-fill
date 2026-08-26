@@ -430,15 +430,24 @@ def candidate_regions(page) -> list[dict]:
             continue  # already covered by a region we kept
         regions.append({"bbox": bbox, "found_by": kind})
 
-    for r in regions:
-        r["nearby_text"] = nearby_text(r["bbox"], text)
-
     # Checkboxes are appended rather than run through the loop above, and are
     # deliberately exempt from both its tests. A tick box is never blank — it
     # holds the very glyph that makes it a tick box — and it legitimately sits
     # inside a larger region, so the "already covered" rule would discard every
     # one that shares a row with a cell.
-    regions += checkbox_glyphs(page, text)
+    boxes = checkbox_glyphs(page, text)
+    regions += boxes
+
+    # Tick squares are printed characters, so without this every region beside
+    # one reports `{"side": "left", "text": "o"}` among its nearest text. That is
+    # noise in the one field the model uses to tell two identically-labelled
+    # boxes apart, and on this form it is a third of what page one sends. They
+    # still count as printing everywhere it matters — `_is_blank` and
+    # `_printed_fraction` both work off the unfiltered list.
+    glyphs = {tuple(b["bbox"]) for b in boxes}
+    labels = [t for t in text if tuple(t["bbox"]) not in glyphs]
+    for r in regions:
+        r["nearby_text"] = nearby_text(r["bbox"], labels)
 
     ticks = comb_ticks(page)
     for r in regions:
@@ -516,9 +525,9 @@ def checkbox_glyphs(page, text=None) -> list[dict]:
     would otherwise reject all of them, and tells the renderer to draw an X
     rather than a string.
 
-    Nothing here infers a label: `nearby_text` already answers that, and on a
-    right-to-left form it correctly reports the label as sitting to the box's
-    left or right without this needing an opinion.
+    `nearby_text` is left to the caller rather than filled in here, because the
+    labels these boxes want are the ones with every *other* tick square already
+    filtered out, and that list does not exist until all of them are known.
     """
     if text is None:
         text = text_boxes(page)
@@ -554,8 +563,7 @@ def checkbox_glyphs(page, text=None) -> list[dict]:
                 continue
             if not (_CHECKBOX_ASPECT[0] <= w / h <= _CHECKBOX_ASPECT[1]):
                 continue
-            out.append({"bbox": bbox, "found_by": "checkbox", "is_checkbox": True,
-                        "nearby_text": nearby_text(bbox, text)})
+            out.append({"bbox": bbox, "found_by": "checkbox", "is_checkbox": True})
     except Exception:
         log.exception("checkbox scan failed; continuing without its regions")
     finally:

@@ -1,5 +1,5 @@
 {
-  "Comment": "Document ingest: classify -> extract -> enrich -> finalize, with a shared failure handler.",
+  "Comment": "Document ingest: classify -> extract -> enrich -> finalize, with a shared failure handler. Enrich's Retry names are the Python exception class names Lambda reports, not Bedrock.* -- an ErrorEquals entry that matches nothing is a retry policy that never fires.",
   "StartAt": "Classify",
   "States": {
     "Classify": {
@@ -23,7 +23,7 @@
       "Resource": "${EnrichArn}",
       "Retry": [
         {
-          "ErrorEquals": ["Bedrock.ThrottlingException", "Bedrock.ServiceQuotaExceededException", "Lambda.TooManyRequestsException"],
+          "ErrorEquals": ["ThrottlingException", "ServiceUnavailableException", "ModelTimeoutException", "ServiceQuotaExceededException", "Lambda.TooManyRequestsException", "Lambda.ServiceException"],
           "IntervalSeconds": 5,
           "BackoffRate": 2.0,
           "MaxAttempts": 5

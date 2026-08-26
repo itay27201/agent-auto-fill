@@ -44,10 +44,33 @@ def s3():
 
 def bedrock():
     """The *runtime* client — .converse/.converse_stream only exist there,
-    not on the control-plane `bedrock` client."""
+    not on the control-plane `bedrock` client.
+
+    Explicit timeouts, because botocore's defaults are wrong for model calls.
+    The default read timeout is 60s and the default retry mode is `legacy`
+    (5 attempts): a Converse call that runs longer than a minute — which any
+    multi-page vision prompt does — gets killed mid-generation and then
+    retried four more times, each one paying for a full inference nobody
+    reads. Ingest failed exactly this way, burning 311s before surfacing
+    ReadTimeoutError. Both agents stream, so this timeout has to cover the
+    gap between chunks rather than the whole generation; 300s is far more
+    than that and still under the shortest caller's Lambda timeout.
+    """
     global _bedrock
     if _bedrock is None:
-        _bedrock = boto3.client("bedrock-runtime", region_name=config.BEDROCK_REGION)
+        _bedrock = boto3.client(
+            "bedrock-runtime",
+            region_name=config.BEDROCK_REGION,
+            config=BotoConfig(
+                connect_timeout=10,
+                read_timeout=config.BEDROCK_READ_TIMEOUT,
+                # One retry, not five (botocore counts this as retries, so
+                # two attempts total). A stalled model call is expensive to
+                # repeat, and the ingest state machine already retries the
+                # step for the errors that are actually worth retrying.
+                retries={"max_attempts": 1, "mode": "standard"},
+            ),
+        )
     return _bedrock
 
 

@@ -103,7 +103,17 @@ def lambda_handler(event, _context):
 
 
 def _invoke(content: list[dict]) -> list[dict]:
-    resp = bedrock().converse(
+    """Streamed rather than a single converse().
+
+    Reading a multi-page form takes minutes, and a non-streaming call holds
+    the connection silent for all of it — long past botocore's read timeout,
+    which then kills the request mid-generation and retries the whole thing.
+    That is what left sessions stuck on "enriching" until the state machine
+    gave up 5 minutes later with ReadTimeoutError. Streaming means the
+    timeout only has to cover the gap between chunks, which is small no
+    matter how long the answer is.
+    """
+    resp = bedrock().converse_stream(
         modelId=config.BEDROCK_MODEL_ID,
         system=[
             {"text": SYSTEM},
@@ -111,10 +121,28 @@ def _invoke(content: list[dict]) -> list[dict]:
             {"cachePoint": {"type": "default"}},
         ],
         messages=[{"role": "user", "content": content}],
-        inferenceConfig={"maxTokens": 8192, "temperature": 0},
+        inferenceConfig={"maxTokens": config.ENRICH_MAX_TOKENS, "temperature": 0},
     )
-    text = "".join(b.get("text", "") for b in resp["output"]["message"]["content"])
-    return _parse(text)
+
+    parts, stop = [], ""
+    for ev in resp["stream"]:
+        if "contentBlockDelta" in ev:
+            delta = ev["contentBlockDelta"]["delta"]
+            if "text" in delta:
+                parts.append(delta["text"])
+        elif "messageStop" in ev:
+            stop = ev["messageStop"].get("stopReason", "")
+
+    if stop == "max_tokens":
+        # The JSON array is cut off mid-element, so _parse would fail with a
+        # decode error that says nothing about why. Long forms hit this: the
+        # ITC-101 income-tax form truncated at the old 8192-token budget on
+        # page two. Raise ENRICH_MAX_TOKENS rather than guessing at the tail.
+        raise ValueError(
+            f"model hit the {config.ENRICH_MAX_TOKENS}-token output budget after "
+            f"{len(''.join(parts))} chars — this form needs a larger ENRICH_MAX_TOKENS"
+        )
+    return _parse("".join(parts))
 
 
 def _parse(text: str) -> list[dict]:

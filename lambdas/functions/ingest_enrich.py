@@ -1,23 +1,40 @@
 """Step 3 of ingest: turn raw extraction into a usable schema.
 
-This is the only expensive step, and it runs once per distinct document
-because of the registry cache.
+This is the only expensive step, and it runs once per distinct document because
+of the registry cache — which is exactly why it runs on the *ingest* model tier
+rather than the chat one. Deciding which ruled cell a Hebrew label belongs to is
+a judgement made once and inherited by every session that form ever has.
 
 Two prompts, one output shape:
 
-  pdf_acroform  we already have field names, types and geometry, but names
-                like "Text14" are useless to the agent. The model looks at
-                the page images and supplies human labels, sections, help
-                text and validation. It must not invent or drop fields.
+  pdf_acroform  we already have field names, types and geometry, but names like
+                "Text14" are useless to the agent. The model looks at the page
+                images and supplies human labels, sections, help text and
+                validation. It must not invent or drop fields.
 
-  pdf_flat      no structure at all. The model reads the page images and
-                returns the full field list with normalized bboxes.
+  pdf_flat      no field structure — but `ingest_extract` has read the page's
+                ruled cells and text out of the PDF and numbered every place a
+                person could write. The model is shown those numbers drawn onto
+                the page and picks one per field. It does not return
+                coordinates, so it cannot return wrong ones.
+
+That last change is the point of this module. Asking a vision model to estimate
+four normalized floats per field is asking it to do the one thing it is worst
+at, and on the Israeli 101 form it produced boxes that were confidently wrong —
+the employer's name stamped over the instructions paragraph. Picking a numbered
+region off an image is character recognition, which it is good at, and the
+answer is exact by construction because the coordinates come from the PDF.
+
+Flat documents are also processed one page per model call rather than the whole
+document in one. That is what retires the `ENRICH_MAX_TOKENS` truncation the old
+single call kept hitting, and it means a failed page costs a page.
 """
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
-from common import config
-from common.aws import s3
+from common import config, form_map, geometry as geo
+from common.aws import bedrock, s3
 from common.llm_json import invoke_json
 from common.store import update_session
 
@@ -34,7 +51,7 @@ Each element:
   "label": "the visible label, in the document's own language",
   "type": "text|textarea|number|date|select|multiselect|checkbox|signature",
   "page": 1,
-  "bbox": [x0, y0, x1, y1],
+  "region_id": 12,
   "section": "the heading this field sits under",
   "required": true,
   "options": ["..."],
@@ -44,31 +61,42 @@ Each element:
 }
 
 Rules:
-- bbox is the AREA THE USER WRITES INTO, not the label. Normalized 0..1 of
-  page width and height, origin at the TOP-LEFT.
 - Keep labels in the source language. Do not translate them.
-- "help" is for someone who has never filled this form. Explain what the
-  field wants and where to find the information. Write it in the same
-  language as the form.
+- field_id must be unique across the whole form and must say which field it is.
+  A form that labels three different boxes "שם" needs employer_name,
+  employee_first_name and health_fund_name — never name_2 and name_3. The
+  people using these ids cannot see the page.
+- "help" is for someone who has never filled this form. Explain what the field
+  wants and where to find the information. Write it in the same language as the
+  form.
 - Set "required" true only where the form marks it or clearly implies it.
-- Use "validation" for well-defined formats (national ID, postal code,
-  phone). Leave it empty if unsure — a wrong regex blocks a correct answer.
-- Checkboxes that are mutually exclusive should be one "select" field with
-  the choices in "options", not several checkboxes.
+- Use "validation" for well-defined formats (national ID, postal code, phone).
+  Leave it empty if unsure — a wrong regex blocks a correct answer.
+- Checkboxes that are mutually exclusive should be one "select" field with the
+  choices in "options", not several checkboxes.
 - Never invent a field that is not visible in the document."""
 
 ACRO_TASK = """This PDF has real form fields. Their ids, types and positions are already known and are AUTHORITATIVE — do not change field_id, type, page or bbox, and do not add or remove entries.
 
 Your job is to look at the page images and fill in the human-readable parts: label, section, required, help, validation, and options where the extracted list has none.
 
-Return one element per entry in the extracted list below, in the same order, preserving field_id, type, page and bbox exactly.
+Return one element per entry in the extracted list below, in the same order, preserving field_id, type, page and bbox exactly. Return "bbox" as given rather than "region_id".
 
 Extracted fields:
 """
 
-FLAT_TASK = """This document has no form fields — it is flat or scanned. Read the page images and identify every place a person must write, tick, or sign.
+FLAT_TASK = """This document has no form fields. The page has been scanned for the places a person could write — ruled cells and underlines with no printed text of their own — and each one is outlined in red with its **region id** printed in the corner. The list of regions below gives, for each id, the text printed nearest to it and on which side.
 
-Estimate each bbox carefully from the image: the blank space after a label, the ruled line, or the box outline. Getting the box right matters more than getting many boxes."""
+Identify every input a person must complete on THIS PAGE, and give each one the `region_id` of the box it should be written into.
+
+- Read the region id off the image, and check it against the `nearby_text` in the list. A region whose nearby text is the label you have in mind is the right region.
+- On a right-to-left form the label is usually the text to the RIGHT of, or directly ABOVE, the box that belongs to it.
+- Do NOT return coordinates. `region_id` is the only way to place a field.
+- If a person clearly must write somewhere that has no region, set `"region_id": null` and give an approximate `"bbox": [x0, y0, x1, y1]` normalized 0..1 from the top-left instead. Use this sparingly — a field with no box is handled gracefully downstream, a field in the wrong box is not.
+- Every field must be on this page. Set "page" to the page number given below.
+
+Regions on this page:
+"""
 
 
 def lambda_handler(event, _context):
@@ -80,26 +108,29 @@ def lambda_handler(event, _context):
     candidates = event.get("candidates") or []
     page_keys = event.get("page_keys") or []
 
-    content = []
-    for i, key in enumerate(page_keys, start=1):
-        img = s3().get_object(Bucket=config.ARTIFACTS_BUCKET, Key=key)["Body"].read()
-        content.append({"text": f"--- page {i} ---"})
-        content.append({"image": {"format": "png", "source": {"bytes": img}}})
-
     if doc_type == "pdf_acroform" and candidates:
-        content.append({"text": ACRO_TASK + json.dumps(_slim(candidates), ensure_ascii=False, indent=1)})
-    else:
-        content.append({"text": FLAT_TASK})
-
-    fields = invoke_json(SYSTEM, content, config.ENRICH_MAX_TOKENS)
-
-    if doc_type == "pdf_acroform" and candidates:
+        fields = _enrich_acroform(candidates, page_keys)
         fields = _reconcile(candidates, fields)
+        pages = []
+    else:
+        pages = _load_regions(event.get("regions_key"))
+        fields = _enrich_flat(pages, event.get("annotated_keys") or page_keys)
 
     fields = _dedupe(fields)
+    fields = _place(fields, pages)
+
     update_session(sid, progress="finalizing")
-    log.info("enriched to %d fields", len(fields))
-    return {**event, "fields": fields}
+    placed = sum(1 for f in fields if f.get("bbox_confidence") != "low")
+    log.info("enriched to %d fields, %d placed", len(fields), placed)
+    return {**event, "fields": fields, "form_map": form_map.render(fields)}
+
+
+# -------------------------------------------------------------------- acroform
+
+def _enrich_acroform(candidates: list[dict], page_keys: list[str]) -> list[dict]:
+    content = _page_content(page_keys)
+    content.append({"text": ACRO_TASK + json.dumps(_slim(candidates), ensure_ascii=False, indent=1)})
+    return invoke_json(SYSTEM, content, config.ENRICH_MAX_TOKENS)
 
 
 def _slim(candidates: list[dict]) -> list[dict]:
@@ -158,6 +189,153 @@ def _reconcile(candidates: list[dict], enriched: list[dict]) -> list[dict]:
             "backend": backend,
         })
     return out
+
+
+# ------------------------------------------------------------------ flat pages
+
+def _load_regions(key: str | None) -> list[dict]:
+    if not key:
+        return []
+    try:
+        body = s3().get_object(Bucket=config.ARTIFACTS_BUCKET, Key=key)["Body"].read()
+        return json.loads(body.decode("utf-8"))
+    except Exception:
+        log.exception("could not read the region table; falling back to estimation")
+        return []
+
+
+def _enrich_flat(pages: list[dict], image_keys: list[str]) -> list[dict]:
+    """One model call per page, in parallel.
+
+    The old code sent every page in one call and asked for the whole form back.
+    That is what kept hitting the output budget — the 101 form truncated
+    mid-array on page two — and a truncated array is a failed ingest, not a
+    partial one. Per page, a budget overrun is impossible at these sizes and a
+    failed page costs its own fields rather than the document's.
+    """
+    if not pages:
+        # No text layer: a scan. Nothing to pick from, so the model is asked for
+        # estimates the way it always was, and `_place` marks them low
+        # confidence so nothing is stamped on the strength of a guess.
+        log.warning("no candidate regions — falling back to estimated boxes")
+        content = _page_content(image_keys)
+        content.append({"text": "This document has no machine-readable geometry. "
+                                "Identify every place a person must write and give "
+                                "each an approximate \"bbox\": [x0, y0, x1, y1], "
+                                "normalized 0..1 from the top-left."})
+        return invoke_json(SYSTEM, content, config.ENRICH_MAX_TOKENS)
+
+    # Same reason note_batch does this: boto3 clients are thread-safe to use but
+    # not to construct, and `aws.bedrock()` is a lazy singleton.
+    bedrock()
+
+    by_page = {p["page"]: p for p in pages}
+    jobs = [(p, image_keys[p - 1]) for p in sorted(by_page) if p <= len(image_keys)]
+
+    out: list[dict] = []
+    with ThreadPoolExecutor(max_workers=config.NOTE_CONCURRENCY) as pool:
+        futures = [pool.submit(_run_page, by_page[p], key) for p, key in jobs]
+        for (page_no, _), future in zip(jobs, futures):
+            try:
+                out.extend(future.result())
+            except Exception as e:
+                # One page failing costs that page's fields. They come back as
+                # nothing rather than as garbage, and the person can still fill
+                # everything the other pages found.
+                log.exception("enrich failed on page %d: %s", page_no, e)
+    return out
+
+
+def _run_page(page: dict, image_key: str) -> list[dict]:
+    regions = page.get("regions") or []
+    img = s3().get_object(Bucket=config.ARTIFACTS_BUCKET, Key=image_key)["Body"].read()
+    content = [
+        {"text": f"--- page {page['page']} ---"},
+        {"image": {"format": "png", "source": {"bytes": img}}},
+        {"text": FLAT_TASK + json.dumps(_slim_regions(regions, page["page"]),
+                                        ensure_ascii=False, indent=1)},
+    ]
+    fields = invoke_json(SYSTEM, content, config.ENRICH_MAX_TOKENS)
+    for f in fields:
+        f["page"] = page["page"]
+    return fields
+
+
+def _slim_regions(regions: list[dict], page_no: int) -> dict:
+    """What the model needs to choose a region: the id and what is printed
+    around it. Not the coordinates — it has no use for them, they are most of
+    the tokens, and a model that can see numbers is a model that can copy one
+    into a bbox field it was told not to fill."""
+    return {
+        "page": page_no,
+        "regions": [
+            {"region_id": r["region_id"], "nearby_text": r.get("nearby_text") or []}
+            for r in regions
+        ],
+    }
+
+
+def _page_content(page_keys: list[str]) -> list[dict]:
+    content = []
+    for i, key in enumerate(page_keys, start=1):
+        img = s3().get_object(Bucket=config.ARTIFACTS_BUCKET, Key=key)["Body"].read()
+        content.append({"text": f"--- page {i} ---"})
+        content.append({"image": {"format": "png", "source": {"bytes": img}}})
+    return content
+
+
+# ---------------------------------------------------------------- placement
+
+def _place(fields: list[dict], pages: list[dict]) -> list[dict]:
+    """Resolve each field's box, and refuse the ones that cannot be trusted.
+
+    A field whose box fails the check keeps everything else — label, type,
+    section, help — and loses only its geometry. The viewer lists it and asks
+    someone to place it; the renderer skips it. This is the same rule the
+    filling agent works under: a blank box is always better than a wrong one on
+    an official form, and an unplaced field is visibly unplaced where a
+    misplaced one looks finished.
+    """
+    regions = {(p["page"], r["region_id"]): r for p in pages for r in p.get("regions") or []}
+    text = {p["page"]: p.get("text") or [] for p in pages}
+    placed: dict[int, list] = {}
+    rejected = 0
+
+    for f in fields:
+        page = int(f.get("page") or 1)
+        rid = f.get("region_id")
+        region = regions.get((page, rid)) if rid is not None else None
+
+        if region:
+            f["bbox"] = region["bbox"]
+            f["bbox_source"] = "region"
+            f["nearby_text"] = region.get("nearby_text") or []
+        elif f.get("bbox"):
+            f["bbox"] = geo.clamp(f["bbox"])
+            f["bbox_source"] = "estimated"
+        else:
+            f["bbox"], f["bbox_source"] = None, "none"
+
+        f.pop("region_id", None)
+
+        reason = geo.sanity_check(f["bbox"], text.get(page, []),
+                                  others=placed.get(page, []),
+                                  label=f.get("label", "")) if f.get("bbox") else "no box"
+        if reason:
+            rejected += 1
+            log.info("unplaced %s (%s): %s", f.get("field_id"), f.get("label"), reason)
+            f["bbox"] = [0.0, 0.0, 0.0, 0.0]
+            f["bbox_confidence"] = "low"
+            f["bbox_note"] = reason
+        else:
+            f["bbox_confidence"] = "ok" if f["bbox_source"] == "region" else "estimated"
+            placed.setdefault(page, []).append(f["bbox"])
+
+        f.setdefault("backend", {"kind": "overlay"})
+
+    if rejected:
+        log.warning("%d of %d fields could not be placed and need a person", rejected, len(fields))
+    return fields
 
 
 def _dedupe(fields: list[dict]) -> list[dict]:

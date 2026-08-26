@@ -13,11 +13,15 @@ be edited, others require the fillable form intact. Offer both.
 """
 import io
 import json
+import logging
 
 from common import config, schema as sch
 from common.api import ApiError, body_of, caller, handler, path_param
 from common.aws import s3
 from common.store import get_session, get_values, load_schema
+
+log = logging.getLogger()
+log.setLevel(logging.INFO)
 
 
 @handler
@@ -54,14 +58,28 @@ def lambda_handler(event, _context):
     doc_type = sess.get("doc_type")
     flatten = bool(body.get("flatten", False))
 
+    unplaced: list[str] = []
     if doc_type == "pdf_acroform":
         out, ext = _fill_acroform(src, fields, values, flatten), "pdf"
     elif doc_type == "pdf_flat":
-        out, ext = _stamp_overlay(src, fields, values), "pdf"
+        (out, unplaced), ext = _stamp_overlay(src, fields, values), "pdf"
     elif doc_type == "docx":
         out, ext = _fill_docx(src, fields, values), "docx"
     else:
         raise ApiError(f"cannot render doc_type {doc_type!r}", 500)
+
+    # A strict render promises the exported document matches the form. A value
+    # with nowhere to go breaks that promise silently, which is worse than
+    # refusing: the person would file a form they believe is complete.
+    if unplaced and body.get("strict", True):
+        raise ApiError(
+            "some filled fields have no known box on the page and would be "
+            "dropped from the export — place them in the viewer first",
+            422,
+            unplaced=[{"field_id": fid,
+                       "label": next((f.label for f in fields if f.field_id == fid), fid)}
+                      for fid in unplaced],
+        )
 
     key = f"outputs/{sid}/filled.{ext}"
     s3().put_object(
@@ -76,7 +94,8 @@ def lambda_handler(event, _context):
                 "ResponseContentDisposition": f'attachment; filename="filled.{ext}"'},
         ExpiresIn=config.DOWNLOAD_URL_TTL,
     )
-    return {"download_url": url, "key": key, "flattened": flatten, "summary": result}
+    return {"download_url": url, "key": key, "flattened": flatten,
+            "summary": result, "unplaced": unplaced}
 
 
 # --------------------------------------------------------------- acroform
@@ -153,8 +172,13 @@ def _fill_acroform(src: bytes, fields, values, flatten: bool) -> bytes:
 
 # ---------------------------------------------------------------- overlay
 
-def _stamp_overlay(src: bytes, fields, values) -> bytes:
-    """Draw a transparent text layer per page and merge it onto the original."""
+def _stamp_overlay(src: bytes, fields, values) -> tuple[bytes, list[str]]:
+    """Draw a transparent text layer per page and merge it onto the original.
+
+    Returns the document and the ids of any filled field it could not place, so
+    the caller can report them rather than shipping a document that is quietly
+    missing values.
+    """
     from pypdf import PdfReader, PdfWriter
     from reportlab.pdfgen import canvas
 
@@ -163,11 +187,23 @@ def _stamp_overlay(src: bytes, fields, values) -> bytes:
     font = _register_font()
 
     per_page: dict[int, list] = {}
+    skipped: list[str] = []
     for f in fields:
         v = (values.get(f.field_id) or {}).get("value")
         if v in (None, "", []):
             continue
+        # No trustworthy box means no stamp. Drawing it anyway would put the
+        # value at the top-left corner of page one, on top of whatever the form
+        # prints there — which is the failure this whole path exists to stop.
+        # It comes back in the response so the caller can say which fields were
+        # dropped instead of the document quietly missing them.
+        if f.bbox_confidence == "low" or not any(f.bbox):
+            skipped.append(f.field_id)
+            continue
         per_page.setdefault(f.page, []).append((f, v))
+
+    if skipped:
+        log.warning("not stamped, no known box: %s", ", ".join(skipped))
 
     for i, page in enumerate(reader.pages, start=1):
         items = per_page.get(i)
@@ -185,7 +221,7 @@ def _stamp_overlay(src: bytes, fields, values) -> bytes:
 
     out = io.BytesIO()
     writer.write(out)
-    return out.getvalue()
+    return out.getvalue(), skipped
 
 
 def _draw_field(c, f, value, page_w, page_h, font):

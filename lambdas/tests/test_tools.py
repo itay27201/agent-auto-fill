@@ -52,7 +52,8 @@ def test_set_field_rejects_bad_source():
     store, emitted = FakeStore(), []
     with mock.patch.object(tools, "store", store):
         out = tools.run_tool("set_field", {
-            "field_id": "f1", "value": "Cohen", "source": "inferred", "evidence": "guessed it",
+            "field_id": "f1", "value": "Cohen", "field_label": "Family name",
+            "source": "inferred", "evidence": "guessed it",
         }, _ctx(store, emitted))
     assert out["ok"] is False
     assert "source" in out["error"]
@@ -63,7 +64,8 @@ def test_set_field_rejects_missing_evidence():
     store, emitted = FakeStore(), []
     with mock.patch.object(tools, "store", store):
         out = tools.run_tool("set_field", {
-            "field_id": "f1", "value": "Cohen", "source": "user_said", "evidence": "  ",
+            "field_id": "f1", "value": "Cohen", "field_label": "Family name",
+            "source": "user_said", "evidence": "  ",
         }, _ctx(store, emitted))
     assert out["ok"] is False
     assert "evidence" in out["error"]
@@ -73,8 +75,8 @@ def test_set_field_writes_as_unconfirmed_agent_draft():
     store, emitted = FakeStore(), []
     with mock.patch.object(tools, "store", store):
         out = tools.run_tool("set_field", {
-            "field_id": "f1", "value": "Cohen", "source": "user_said",
-            "evidence": "user said 'my family name is Cohen'",
+            "field_id": "f1", "value": "Cohen", "field_label": "Family name",
+            "source": "user_said", "evidence": "user said 'my family name is Cohen'",
         }, _ctx(store, emitted))
 
     assert out == {"field_id": "f1", "ok": True, "awaiting_user_confirmation": True}
@@ -84,12 +86,83 @@ def test_set_field_writes_as_unconfirmed_agent_draft():
     assert store.events[0]["kind"] == "agent_fill"
 
 
+def test_set_field_refuses_a_write_whose_label_belongs_to_another_box():
+    """The screenshot failure: a correct, correctly-sourced value written into
+    the wrong cell because three fields on form 101 are labelled "שם"."""
+    store, emitted = FakeStore(), []
+    fields = [
+        _field(field_id="employer_name", label="שם", section="א. פרטי המעסיק"),
+        _field(field_id="employee_first_name", label="שם", section="ב. פרטי העובד"),
+        _field(field_id="employer_dednum", label="מספר תיק ניכויים", section="א. פרטי המעסיק"),
+    ]
+    ctx = tools.ToolContext(sid="s1", fields=fields, actor="t",
+                            emit=lambda k, d: emitted.append((k, d)))
+
+    with mock.patch.object(tools, "store", store):
+        out = tools.run_tool("set_field", {
+            "field_id": "employer_dednum", "value": "Bleader", "field_label": "שם",
+            "source": "user_said", "evidence": "the company is Bleader",
+        }, ctx)
+
+    assert out["ok"] is False
+    assert out["actual_label"] == "מספר תיק ניכויים"
+    assert store.values == {}, "nothing may be written on a mismatch"
+    # The rejection has to be recoverable inside the same turn, so it names the
+    # fields that really do carry the label the model asked for.
+    assert [f["field_id"] for f in out["fields_with_that_label"]] == [
+        "employer_name", "employee_first_name"]
+
+    # And the right box goes through, with the twin flagged rather than guessed.
+    with mock.patch.object(tools, "store", store):
+        ok = tools.run_tool("set_field", {
+            "field_id": "employer_name", "value": "Bleader", "field_label": " שם :",
+            "source": "user_said", "evidence": "the company is Bleader",
+        }, ctx)
+    assert ok["ok"] is True, "punctuation and spacing must not fail a correct write"
+    assert store.values["employer_name"]["value"] == "Bleader"
+
+
+def test_set_field_refuses_a_label_no_field_carries():
+    store, emitted = FakeStore(), []
+    with mock.patch.object(tools, "store", store):
+        out = tools.run_tool("set_field", {
+            "field_id": "f1", "value": "Cohen", "field_label": "Passport number",
+            "source": "user_said", "evidence": "said it",
+        }, _ctx(store, emitted))
+    assert out["ok"] is False
+    assert "No field on this form carries that label" in out["hint"]
+    assert store.values == {}
+
+
+def test_explain_field_says_which_box_and_names_its_twins():
+    fields = [
+        _field(field_id="employer_name", label="שם", section="א",
+               nearby_text=[{"side": "right", "text": "כתובת"}]),
+        _field(field_id="employee_first_name", label="שם", section="ב"),
+    ]
+    out = tools.run_tool("explain_field", {"field_id": "employer_name"},
+                         tools.ToolContext(sid="s1", fields=fields, actor="t"))
+    assert out["other_fields_with_the_same_label"] == ["employee_first_name"]
+    assert out["printed_around_this_box"] == [{"side": "right", "text": "כתובת"}]
+    assert "different boxes" in out["disambiguation"]
+
+
+def test_explain_field_admits_when_a_box_has_no_known_place():
+    """A value in an unplaced field never reaches the exported document, so the
+    agent has to be able to say so rather than reporting it filled."""
+    fields = [_field(bbox_confidence="low", bbox_note="box lies on top of the form's own text")]
+    out = tools.run_tool("explain_field", {"field_id": "f1"},
+                         tools.ToolContext(sid="s1", fields=fields, actor="t"))
+    assert "will not appear in the exported document" in out["not_placed"]
+
+
 def test_validate_flags_unconfirmed_until_confirmed():
     store, emitted = FakeStore(), []
     ctx = _ctx(store, emitted)
     with mock.patch.object(tools, "store", store):
         tools.run_tool("set_field", {
-            "field_id": "f1", "value": "Cohen", "source": "user_said", "evidence": "said it",
+            "field_id": "f1", "value": "Cohen", "field_label": "Family name",
+            "source": "user_said", "evidence": "said it",
         }, ctx)
         result = tools.run_tool("validate", {}, ctx)
     assert result["awaiting_confirmation"] == [{"field_id": "f1", "label": "Family name"}]

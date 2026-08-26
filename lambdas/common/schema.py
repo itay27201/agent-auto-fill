@@ -24,6 +24,20 @@ class FormField:
     # Normalized [x0, y0, x1, y1], origin top-left, 0..1 of page width/height.
     # Normalized so the frontend can overlay at any zoom without rescaling.
     bbox: list[float] = dc_field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+    # How much to trust `bbox`, and why. "ok" came from the document's own
+    # geometry; "estimated" was a model's guess about a page with no text layer;
+    # "low" failed `geometry.sanity_check` and has no usable box at all.
+    #
+    # This exists because the alternative to admitting a box is wrong is
+    # stamping a value somewhere wrong and calling the form filled. A field
+    # marked "low" is listed in the panel, drawn nowhere on the page, skipped by
+    # the renderer, and waiting for a person to place it.
+    bbox_confidence: str = "ok"
+    bbox_source: str = ""         # region | estimated | none | user
+    bbox_note: str = ""           # why it was rejected, for the person fixing it
+    # The form's own printing nearest this box, from the geometry pass. What
+    # tells three fields labelled "שם" apart when `label` cannot.
+    nearby_text: list[dict] = dc_field(default_factory=list)
     section: str = ""
     required: bool = False
     options: list[str] = dc_field(default_factory=list)

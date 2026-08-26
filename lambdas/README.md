@@ -7,10 +7,13 @@ ingest pipeline. Both agents run on Bedrock Sonnet 4.6.
 
 ```
 common/            shared across every function
-  config.py        env-driven settings, model id
+  config.py        env-driven settings, the two model ids
   aws.py           lazy boto3 clients
   api.py           REST plumbing, CORS, error wrapping
   schema.py        FormField model + validation      <- the contract
+  geometry.py      a page's ruled cells and text, read out of the PDF
+  ocr.py           Textract, for pages with no geometry to read
+  form_map.py      where each box is, as markdown   <- the layout contract
   store.py         DynamoDB single-table access
   catalog.py       the closed list of forms
   guide.py         the markdown guide: parse/render/slice
@@ -20,7 +23,8 @@ common/            shared across every function
 functions/
   api_create_session.py   POST   /sessions
   api_get_session.py      GET    /sessions/{id}
-  api_set_fields.py       PATCH  /sessions/{id}/fields
+  api_set_fields.py       PATCH  /sessions/{id}/fields    values
+  api_set_schema.py       PATCH  /sessions/{id}/schema    box geometry
   api_validate.py         POST   /sessions/{id}/validate
   api_render.py           POST   /sessions/{id}/render
   api_catalog_list.py     GET    /catalog
@@ -55,6 +59,37 @@ They share the streaming loop and nothing else.
 The toolConfig is chosen per turn, so neither can call the other's tools: the
 authoring agent has no way to write a form value, and the filling agent has no
 way to edit a guide. `read_guide` is the one name in both, read-only in each.
+
+## Two model tiers
+
+Defining a form is rare, expensive and human-reviewed. Filling one is frequent,
+cheap and has to be accurate. The pipeline is priced accordingly:
+
+| | Define a form | Fill a form |
+|---|---|---|
+| When | catalog authoring, or the first upload of an unseen document | every session, including every registry cache hit |
+| Model | `IngestModelId` — Opus 4.8 | `BedrockModelId` — Sonnet 4.6 |
+| Geometry | read from the PDF; Textract only for scans | none, reads `schema.json` |
+| Writes | `schema.json`, `form-map.md`, `guide.md` | field values |
+
+`llm_json.invoke_json` defaults to the ingest tier because every caller of it is
+on the define-once path. The chat agents go through `agent_loop` instead, and
+`AgentChatFn`'s IAM names only the chat profile — so no chat turn can reach the
+expensive model even by misconfiguration.
+
+Two things about the ingest tier will fail at runtime if you get them wrong,
+and both are handled in `llm_json._converse`:
+
+- **`temperature` is gone.** Sampling parameters were removed on Opus 4.7+ and
+  Sonnet 5; they return a 400. Sonnet 4.6 still accepts them, which is why the
+  old single-tier code could always send `temperature: 0`. `config.accepts_sampling`
+  is the one place that knows which is which.
+- **Thinking is opt-in.** On Opus 4.8 an omitted `thinking` block means the
+  model runs *without* thinking, which is most of what the tier was chosen for.
+  It is asked for explicitly, adaptive only — `budget_tokens` is gone too. The
+  extra fields ride in `additionalModelRequestFields`, and a Bedrock version
+  that rejects them is retried once without: losing the thinking costs quality,
+  failing the call costs the upload.
 
 ## The model id
 
@@ -107,18 +142,28 @@ There are two ways in, and they meet at the same session.
 3. Classify → extract → enrich → finalize. Poll `GET /sessions/{id}` until
    `status` is `ready`. If the document's SHA-256 matches a published catalog
    form, classify short-circuits and the session picks up that form's guide.
+   Extract also reads the page's ruled cells and text out of the PDF and
+   numbers every place a person could write; enrich shows the model that
+   numbered page and takes back a `region_id` per field, never a coordinate.
 
 **Both, from here**
 
 4. Frontend draws field boxes from `schema[].bbox` (normalized 0–1,
-   top-left origin, so overlay works at any zoom).
+   top-left origin, so overlay works at any zoom). Fields whose box failed
+   ingest's checks carry `bbox_confidence: "low"`, are drawn nowhere, and are
+   flagged in the panel for someone to place.
 5. User types → `PATCH .../fields`. User chats → WebSocket `message`.
-6. `POST .../render` → presigned download.
+   User drags a box → `PATCH .../schema`.
+6. `POST .../render` → presigned download. A strict render refuses while a
+   filled field still has no box.
 
 **Defining a form** reuses the upload flow rather than adding a second
 pipeline: upload the blank form, `POST /catalog` to promote the finished
 session into a draft, write the guide over the `author` WebSocket route, then
-`PATCH /catalog/{cid}` with `status: published`.
+`PATCH /catalog/{cid}` with `status: published`. This is the tier worth
+spending on — check the form map and place any boxes ingest declined *before*
+publishing, because everything fixed here is inherited by every session the
+form ever has, and everything missed here is too.
 
 ### WebSocket protocol
 
@@ -157,6 +202,61 @@ markdown, so the page re-renders live), `turn_end`, `error`.
 separate step. This is why the same agent works across PDF, DOCX, fillable
 and flat.
 
+**A model picks a box; it never invents one.** The flat path used to ask the
+vision model to estimate four normalized floats per field from a page image.
+That is the one thing vision models are worst at, and on the Israeli 101 form it
+put the employer's name across the instructions paragraph and the deduction-file
+number in the name cell — confidently, with nothing downstream checking.
+
+A printed form is not a picture. It is a table of ruled cells, and the PDF says
+exactly where every rule and glyph sits. `geometry.py` reads that out, numbers
+every blank cell and underline, and `ingest_extract` draws those numbers onto a
+copy of the page raster. The model is shown the numbered image and returns a
+`region_id`; the coordinates come from the PDF. A wrong answer degrades from
+"a box in the wrong place" to "the wrong box", which the checks below and the
+viewer's box editor both catch.
+
+Flat pages are also enriched one model call per page rather than one per
+document. That retires the `ENRICH_MAX_TOKENS` truncation the single call kept
+hitting, and a failed page now costs a page.
+
+**An unplaced field is honest; a misplaced one is a lie.** Every box is run
+through `geometry.sanity_check`: in range, non-degenerate, not on top of the
+form's own printing, not on its own label, not overlapping another field. A box
+that fails loses only its geometry — the field keeps its label, type, section
+and help, and is marked `bbox_confidence: "low"`. The viewer draws it nowhere
+and flags it in the panel, `api_render` refuses to stamp it, and a strict render
+refuses to export while a filled field has nowhere to go. This is the same rule
+`set_field` enforces for values: a blank box is always better than a wrong one
+on an official form.
+
+**Anyone can move a box.** Before `api_set_schema` there was no path anywhere in
+the system to fix a bbox — not the API, not the UI, not the authoring agent —
+and a wrong one went into a registry with no TTL, so every later upload of that
+form inherited it. It is a separate route from `PATCH .../fields` because the two
+have different concurrency stories: values are per-item conditional writes shared
+by two writers, geometry is one S3 object rewritten whole by the one person
+looking at the page.
+
+**`form-map.md` is the third artifact.** `schema.json` is the machine contract
+and `guide.md` is what a PDF cannot contain; the map answers the question neither
+can — *which box is this?* Form 101 labels at least three different fields `שם`,
+so the agent's field list of ids, labels and sections could not tell them apart.
+The map gives each field its row and side and calls out every repeated label by
+name. It rides in the system prompt behind the cache point, so the layout costs
+tokens once per session instead of being re-reasoned every turn, and it is
+markdown for the same reason the guide is: a person has to be able to read it
+and see that a box was misunderstood. It is generated in code from the schema,
+never asked of a model, so it cannot drift from `schema.json`.
+
+**Writes state which box they are going into.** `set_field` already demanded a
+`source` and `evidence`, which establish that a value is *real*. Neither says
+anything about whether it is going in the *right place*, and that is the failure
+that actually happened: a correct, correctly-sourced value in the wrong cell.
+`field_label` is checked against the schema and a mismatch is refused, with the
+fields that do carry that label named in the error so the agent can correct
+itself inside the same turn.
+
 **The transcript is durable, so it is normalized on read as well as on
 write.** A filling session stores its messages and replays them into Converse
 every turn, which means one block Bedrock rejects — an empty text block, a
@@ -181,6 +281,22 @@ values the user just typed in manually.
 **The form registry is the real asset.** Schemas are cached by document
 SHA-256. The second upload of the same form skips the vision pass entirely.
 Registry entries have no TTL; session data does.
+
+**...which is why a cache hit has to match on pipeline version too.** No TTL
+means a schema built by an older, worse ingest is inherited forever. Deleting
+the document and uploading it again does nothing: the cache is keyed by the
+file's bytes, so identical bytes hit the identical entry — the whole point of
+it — and ingest never re-runs. `config.SCHEMA_VERSION` closes that. Bump it when
+a change alters what ingest *produces*, and every cached form re-ingests once,
+by itself, the next time somebody uploads it. `POST /sessions` also takes
+`force_reingest` for the different case where a current-version schema is simply
+wrong for one document.
+
+A **catalog** entry is stamped with the same version but never rebuilt
+automatically. Its schema can carry boxes a person placed by hand and its guide
+was reviewed; discarding that to pick up a better default is not a trade the
+system gets to make. `cat.get` and the listing report `schema_stale` instead,
+and re-promoting is a person's decision.
 
 **The catalog is that registry made visible.** A government issues a fixed
 list of forms, so the interesting case is not "an arbitrary document" but "the
@@ -227,9 +343,10 @@ python3 tests/test_guide.py         # guide parse/render round-trip, prompt budg
 python3 tests/test_agent_loop.py    # streaming loop: nothing invalid is sent or stored
 python3 tests/test_guide_checks.py  # coverage counted in code, not asked of the model
 python3 tests/test_note_batch.py    # chunking, retries, and what a batch missed
+python3 tests/test_geometry.py      # boxes read from the PDF, and the ones refused
 ```
 
-All seven run without AWS credentials.
+All eight run without AWS credentials.
 
 ## Not done yet
 
@@ -241,9 +358,13 @@ All seven run without AWS credentials.
   author-or-admin check is a policy change rather than a migration.
 - **DOCX → PDF** needs LibreOffice, which is ~400MB — past the 250MB layer
   limit. `ExtractFn` has to become a container image function.
-- **Textract** is not wired in. `ingest_enrich` does field detection with
-  vision alone. For English forms, Textract `AnalyzeDocument` with `FORMS`
-  is cheaper and probably more accurate — the seam is `_invoke()`.
+- **Textract on Hebrew scans.** It is wired in (`common/ocr.py`) but only fires
+  for a page with no text layer at all, which is a scan or a photograph —
+  everything else gets exact geometry out of the PDF for free. Its Hebrew
+  key/value detection is markedly weaker than its English, so on a Hebrew scan
+  expect it to find some boxes and miss others. That is survivable rather than
+  good: a missed field is left unplaced rather than placed wrongly, and the
+  viewer's box editor is how the rest get placed.
 - **Hebrew/RTL overlay** needs a TTF at `RTL_FONT_PATH` in the layer;
   reportlab's built-in fonts render Hebrew as black boxes. Irrelevant if
   your forms are AcroForm PDFs or English.

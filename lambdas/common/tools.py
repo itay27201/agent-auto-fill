@@ -17,6 +17,16 @@ from . import store
 
 VALID_SOURCES = ("user_said", "profile", "source_doc")
 
+_LABEL_PROP = {
+    "type": "string",
+    "description": (
+        "The label printed on the box you are writing into, copied exactly from "
+        "the field list. This is checked against the schema and the write is "
+        "refused if it does not match — forms repeat labels, and a value in the "
+        "wrong box is worse than no value."
+    ),
+}
+
 _SOURCE_PROP = {
     "type": "string",
     "enum": list(VALID_SOURCES),
@@ -70,13 +80,14 @@ TOOL_SPECS = [
                     "value": {
                         "description": "String, number, boolean for checkboxes, or array for multiselect."
                     },
+                    "field_label": _LABEL_PROP,
                     "source": _SOURCE_PROP,
                     "evidence": {
                         "type": "string",
                         "description": "Quote or paraphrase the exact user statement or document text this came from.",
                     },
                 },
-                "required": ["field_id", "value", "source", "evidence"],
+                "required": ["field_id", "value", "field_label", "source", "evidence"],
             }},
         }
     },
@@ -94,10 +105,11 @@ TOOL_SPECS = [
                             "properties": {
                                 "field_id": {"type": "string"},
                                 "value": {},
+                                "field_label": _LABEL_PROP,
                                 "source": _SOURCE_PROP,
                                 "evidence": {"type": "string"},
                             },
-                            "required": ["field_id", "value", "source", "evidence"],
+                            "required": ["field_id", "value", "field_label", "source", "evidence"],
                         },
                     }
                 },
@@ -239,6 +251,10 @@ def _write_one(u: dict, ctx: ToolContext) -> dict:
     if not (u.get("evidence") or "").strip():
         return {"field_id": fid, "ok": False, "error": "evidence is required"}
 
+    mismatch = _wrong_field(u.get("field_label"), f, ctx)
+    if mismatch:
+        return {"field_id": fid, "ok": False, **mismatch}
+
     err = sch.validate_value(f, u.get("value"))
     if err:
         return {"field_id": fid, "ok": False, "error": err}
@@ -249,6 +265,52 @@ def _write_one(u: dict, ctx: ToolContext) -> dict:
     ctx.emit("field_updated", {"field_id": fid, "value": u["value"],
                                "source": "agent", "confirmed": False})
     return {"field_id": fid, "ok": True, "awaiting_user_confirmation": True}
+
+
+def _normalize_label(text: str) -> str:
+    """Labels come back through a model, so they arrive with the punctuation and
+    direction marks the form prints around them. Compare the words, not the
+    typography."""
+    stripped = "".join(ch for ch in (text or "") if ch not in "‎‏‪‫‬")
+    return " ".join(stripped.split()).strip(" :*.־-").lower()
+
+
+def _wrong_field(claimed: str | None, f: sch.FormField, ctx: ToolContext) -> dict | None:
+    """Refuse a write whose stated label is not this field's label.
+
+    The `source`/`evidence` rule above establishes that a value is real. It says
+    nothing about whether it is going into the right box, and on a form that
+    labels three different fields "שם" that is the failure that actually
+    happens: a correct value, correctly sourced, written into the wrong cell and
+    then stamped onto a tax form.
+
+    Making the model state the label turns a silent misfile into a rejected
+    call. The rejection carries the fields that *do* carry the claimed label, so
+    it can be corrected inside the same turn rather than becoming a dead end.
+    """
+    want = _normalize_label(claimed)
+    if not want:
+        return {"error": "field_label is required — state the label printed on the box you are writing into"}
+    if want == _normalize_label(f.label):
+        return None
+
+    alternatives = [
+        {"field_id": o.field_id, "label": o.label, "section": o.section}
+        for o in ctx.fields if _normalize_label(o.label) == want
+    ]
+    out = {
+        "error": (f"field_label does not match: {f.field_id!r} is labelled "
+                  f"{f.label!r}, not {claimed!r}. Nothing was written."),
+        "actual_label": f.label,
+        "actual_section": f.section,
+    }
+    if alternatives:
+        out["fields_with_that_label"] = alternatives[:5]
+        out["hint"] = "One of these is probably the field you meant."
+    else:
+        out["hint"] = ("No field on this form carries that label. Call get_schema "
+                       "or explain_field to find the right one.")
+    return out
 
 
 def _t_set_field(args: dict, ctx: ToolContext) -> dict:
@@ -295,6 +357,28 @@ def _t_explain_field(args: dict, ctx: ToolContext) -> dict:
         "guidance": f.help or "No guidance was captured from the document itself.",
         "expected_format": f.validation or None,
     }
+
+    # Which box, physically. This is the on-demand answer to "is this the same
+    # שם as the one in section א?", and it belongs here rather than in
+    # `agent_view` — every field's neighbours in every schema listing would be a
+    # lot of tokens to spend on a question that is only asked about a few.
+    if f.nearby_text:
+        out["printed_around_this_box"] = f.nearby_text
+    twins = [o.field_id for o in ctx.fields
+             if o.field_id != f.field_id and _normalize_label(o.label) == _normalize_label(f.label)]
+    if twins:
+        out["other_fields_with_the_same_label"] = twins
+        out["disambiguation"] = (
+            "This form uses this label more than once. These are different boxes; "
+            "check `printed_around_this_box` and `section` before writing."
+        )
+    if f.bbox_confidence == "low":
+        out["not_placed"] = (
+            "Nobody has established where this box is on the page, so a value "
+            "written here will not appear in the exported document until someone "
+            "places it. Tell the person that."
+        )
+
     if note:
         out["official_note"] = note
         out["note_source"] = "Written by a person for this form. Prefer it over `guidance`."

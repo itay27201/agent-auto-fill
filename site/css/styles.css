@@ -439,6 +439,42 @@ a:hover { text-decoration: underline; }
 }
 .field-box[data-type="checkbox"] .field-value { justify-content: center; font-size: 70cqh; }
 .field-box.draft .field-value { color: var(--warn); font-style: italic; }
+
+/* Placing mode: drag a box that ingest put in the wrong place, or draw one for
+   a field it refused to place at all. Everything is already positioned in
+   percentages of .page, so the gesture maths in viewer.js needs no zoom factor
+   and produces the normalized bbox the schema already uses. */
+.viewer-toolbar button.needs-attention {
+  border-color: var(--draft-border);
+  background: var(--draft-bg);
+  color: #92400e;
+}
+.pages.placing .page { cursor: crosshair; }
+.pages.placing .field-box { border-color: rgba(79, 70, 229, 0.45); }
+.field-box.movable { cursor: move; touch-action: none; }
+.field-box.hand-placed { border-color: rgba(21, 128, 61, 0.75); border-style: solid; }
+.field-box.dragging,
+.field-box.drawing {
+  border-color: var(--brand);
+  background: rgba(79, 70, 229, 0.16);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
+  transition: none; /* the transition would lag the pointer */
+}
+.field-box .handle {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  background: var(--panel);
+  border: 1.5px solid var(--brand);
+  border-radius: 3px;
+  touch-action: none;
+}
+.field-box .handle.nw { top: -6px; left: -6px; cursor: nwse-resize; }
+.field-box .handle.ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.field-box .handle.sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+.field-box .handle.se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+/* A box being drawn has no handles yet and must not eat its own pointer events. */
+.field-box.drawing { pointer-events: none; }
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.55); }
   100% { box-shadow: 0 0 0 12px rgba(79, 70, 229, 0); }
@@ -519,6 +555,27 @@ a:hover { text-decoration: underline; }
   padding: 6px 8px;
 }
 .field-row .draft-banner::before { content: "✦"; flex-shrink: 0; }
+
+/* A field ingest could not place. Deliberately loud: it is drawn nowhere on the
+   document, so the panel is the only place it can be noticed, and a value in it
+   is dropped from the export rather than stamped in the wrong place. */
+.field-row.unplaced { border-color: var(--draft-border); }
+.field-row .place-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--draft-border);
+  border-radius: 8px;
+  background: var(--draft-bg);
+  font-size: 12px;
+  line-height: 1.35;
+  color: #92400e;
+}
+.field-row .place-banner::before { content: "⌖"; flex-shrink: 0; font-size: 14px; }
+.field-row .place-banner span { flex: 1; }
+.field-row .place-banner button { flex-shrink: 0; }
 .field-row .select-toggle {
   border: 1px solid var(--border-strong);
   border-radius: 6px;

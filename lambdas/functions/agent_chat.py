@@ -23,10 +23,16 @@ from common.store import (
     append_message,
     get_session,
     get_values,
+    load_form_map,
     load_schema,
     recent_events,
     recent_messages,
 )
+
+# The map is generated per page and can be long on a twenty-page form. Capped
+# so it cannot crowd out the field list the agent actually reasons over — the
+# same trade `guide.prompt_block` makes for the same reason.
+MAX_FORM_MAP_CHARS = 12_000
 
 log = logging.getLogger()
 log.setLevel(logging.INFO)
@@ -37,6 +43,7 @@ How you work:
 - The person is the source of truth. Fill a field only from something they told you, something in their saved profile, or something you read in a document they uploaded. If you do not have a value, ask for it. Never guess, never infer from context, never fill a plausible placeholder. A blank box is always better than a wrong one on an official form.
 - Everything you write is a draft. The person confirms each value in the interface before it can be exported. Say so when it matters, but do not repeat it every turn.
 - When you ask about a specific field, call highlight_field first so they can see which box you mean.
+- Forms repeat labels. The same word can label three different boxes in three different sections, so a label alone never identifies a field — use the form map and the section, and call explain_field when you are not certain. Every write must state the label of the box it is going into, and a write whose label does not match is refused.
 - Work through the form in the order the person wants. If they selected a section, stay in it unless they ask to move on.
 - Before answering a question about what a field wants, call explain_field. The official guidance is often more specific than the label suggests.
 - Reply in the language the person writes in. Field labels stay in the form's own language.
@@ -98,6 +105,14 @@ def _turn(body: dict, send) -> None:
         {"text": SYSTEM},
         {"text": _form_context(fields, values, scope)},
     ]
+    # Where every box sits and what tells apart two that share a label. Written
+    # once when the form was defined, byte-identical on every turn, and inside
+    # the cache point below — so the layout knowledge that stops the agent
+    # confusing the employer's name with the employee's is paid for once per
+    # session rather than reasoned out from scratch every turn.
+    form_map = load_form_map(sess.get("form_map_key"))
+    if form_map:
+        system.append({"text": _map_block(form_map)})
     block = gd.prompt_block(guide)
     if block:
         # Inside the cache point: the guide is byte-identical on every turn of
@@ -147,6 +162,21 @@ def _form_context(fields, values, scope) -> str:
             "Work on these unless they ask otherwise."
         )
     return f"{header}\n\nFields:\n{json.dumps(view, ensure_ascii=False)}"
+
+
+def _map_block(form_map: str) -> str:
+    body = form_map.strip()
+    if len(body) > MAX_FORM_MAP_CHARS:
+        cut = body.rfind("\n", 0, MAX_FORM_MAP_CHARS)
+        body = body[: cut if cut > MAX_FORM_MAP_CHARS // 2 else MAX_FORM_MAP_CHARS]
+        body += "\n\n[map truncated — call explain_field for a field not listed above]"
+    return (
+        "How this form is laid out. Use it to tell apart fields that share a "
+        "label: the `where` column says which box on the page each field_id is, "
+        "and any label used more than once is called out explicitly. A field "
+        "marked **not placed** has no known box — a value written there will not "
+        "appear in the exported document until someone places it.\n\n" + body
+    )
 
 
 def _recent_changes(sid: str) -> str:

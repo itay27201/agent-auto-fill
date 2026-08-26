@@ -9,6 +9,10 @@ export const state = {
   values: {},            // field_id -> {value, source, confirmed, version, ...}
   pageUrls: [],
   selectedFieldIds: new Set(),
+  // Box-placing mode. `placing` turns every box into something draggable;
+  // `placingFieldId` is the unplaced field waiting to be drawn onto the page.
+  placing: false,
+  placingFieldId: null,
 };
 
 const listeners = new Set();
@@ -37,6 +41,31 @@ export function setSession(session) {
 export function applyFieldUpdate(fieldId, patch) {
   const prev = state.values[fieldId] || {};
   state.values[fieldId] = { ...prev, ...patch };
+  notify();
+}
+
+/** A box someone moved. Patches the schema entry, not the value — geometry and
+ * content are separate stores on the backend for the same reason. */
+export function applyBoxUpdate(fieldId, bbox, page) {
+  const f = state.fieldsById.get(fieldId);
+  if (!f) return;
+  f.bbox = bbox;
+  if (page) f.page = page;
+  f.bbox_confidence = "ok";
+  f.bbox_source = "user";
+  f.bbox_note = "";
+  notify();
+}
+
+/** Fields ingest could not place. They have no box on the page, so they are
+ * unreachable from the document view — the panel is the only way to find them,
+ * and the renderer refuses to export a value sitting in one. */
+export function unplacedFields() {
+  return state.fields.filter((f) => f.bbox_confidence === "low");
+}
+
+export function setPlacing(fieldId) {
+  state.placingFieldId = fieldId || null;
   notify();
 }
 

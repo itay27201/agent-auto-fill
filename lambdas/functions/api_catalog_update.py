@@ -10,11 +10,53 @@ Publishing refuses an empty guide. An entry whose whole value proposition is
 "we already know this form" should not reach the picker saying nothing about
 it — that is a worse experience than the upload flow it replaces.
 """
-from common import catalog as cat, guide as gd, guide_checks as gchk
+from common import catalog as cat, form_map, geometry as geo, guide as gd, guide_checks as gchk
 from common.api import ApiError, body_of, handler, path_param
 from common.store import load_schema, registry_store
 
 _META = ("name", "agency", "description", "language")
+
+
+def _apply_boxes(entry: dict, updates: list) -> dict:
+    """Write corrected boxes into the entry's schema, and rebuild its map.
+
+    Rejects the same things `api_set_schema` does, because a box promoted to the
+    catalog is inherited by everyone and is the one worth being strict about.
+    An unknown field_id is an error rather than a silent skip: it means the
+    caller is holding a schema that no longer matches this entry.
+    """
+    if not isinstance(updates, list):
+        raise ApiError("schema_updates must be a list", 400)
+
+    fields = load_schema(entry["schema_key"])
+    by_id = {f.get("field_id"): f for f in fields}
+
+    for u in updates:
+        fid = (u or {}).get("field_id")
+        f = by_id.get(fid)
+        if not f:
+            raise ApiError(f"no field {fid!r} in this form", 400)
+        bbox = (u or {}).get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            raise ApiError(f"{fid}: bbox must be [x0, y0, x1, y1]", 400)
+        try:
+            bbox = geo.clamp([float(v) for v in bbox])
+        except (TypeError, ValueError):
+            raise ApiError(f"{fid}: bbox values must be numbers", 400) from None
+        if geo.area(bbox) <= 0:
+            raise ApiError(f"{fid}: bbox has no area", 400)
+
+        f["bbox"] = bbox
+        f["page"] = int(u.get("page") or f.get("page") or 1)
+        f["bbox_confidence"] = "ok"
+        f["bbox_source"] = "user"
+        f["bbox_note"] = ""
+
+    return {
+        "schema_key": cat.put_schema(entry["catalog_id"], fields),
+        "form_map_key": cat.put_form_map(entry["catalog_id"], form_map.render(fields)),
+        "unplaced_count": sum(1 for f in fields if f.get("bbox_confidence") == "low"),
+    }
 
 
 @handler
@@ -29,6 +71,15 @@ def lambda_handler(event, _context):
     changes = {k: str(body[k]).strip() for k in _META if k in body}
     if changes.get("name") == "":
         raise ApiError("name cannot be empty", 400)
+
+    # Promote box corrections from a session up to the entry. A person moving a
+    # box while filling their own copy fixes their copy; doing it here fixes it
+    # for everyone who picks this form afterwards. That is the point of a
+    # catalog — twenty forms, each placed correctly once — and it is a separate,
+    # deliberate act for the same reason publishing is.
+    boxes = body.get("schema_updates")
+    if boxes:
+        changes.update(_apply_boxes(entry, boxes))
 
     # Two ways to edit the guide: whole-file, from the authoring page's
     # textarea, or one section at a time, which is what the agent's tools do.
@@ -77,6 +128,7 @@ def lambda_handler(event, _context):
             updated["doc_hash"], updated["schema_key"], updated.get("doc_type", ""),
             form_name=updated.get("name", ""),
             catalog_id=cid, guide_key=updated.get("guide_key", ""),
+            form_map_key=updated.get("form_map_key", ""),
         )
 
     # The publish floor above only asks whether *anything* was written. That is
@@ -89,9 +141,25 @@ def lambda_handler(event, _context):
     # a courtesy — never fail the write someone asked for because the extra
     # read behind it did.
     if updated.get("schema_key"):
+        schema = load_schema(updated["schema_key"])
         final = cat.load_guide(updated.get("guide_key")) or gd.empty()
-        report = gchk.check(final, load_schema(updated["schema_key"]),
-                            updated.get("language", ""))
+        report = gchk.check(final, schema, updated.get("language", ""))
         out["report"] = report
         out["summary"] = gchk.summary(report)
+
+        # Same principle as the coverage numbers above, for geometry. Publishing
+        # is not blocked on it — some fields legitimately have nowhere to go, and
+        # that is the author's call — but a value written into an unplaced box is
+        # dropped from the export, so nobody should publish without being told.
+        unplaced = [{"field_id": f.get("field_id"), "label": f.get("label", ""),
+                     "reason": f.get("bbox_note", "")}
+                    for f in schema if f.get("bbox_confidence") == "low"]
+        if unplaced:
+            out["unplaced"] = unplaced[:20]
+            out["unplaced_count"] = len(unplaced)
+            out["unplaced_note"] = (
+                f"{len(unplaced)} of {len(schema)} boxes have no known place on the "
+                "page. Values written into them will not appear in the exported "
+                "document. Place them in the viewer before publishing."
+            )
     return out

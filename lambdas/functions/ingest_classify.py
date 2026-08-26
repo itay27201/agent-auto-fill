@@ -52,7 +52,10 @@ def lambda_handler(event, _context):
     doc_type, page_count = _detect(body, event["key"])
     doc_hash = _sha256(body)
 
-    cached = registry_lookup(doc_hash)
+    # `registry_lookup` already declines an entry an older pipeline built, so
+    # the only thing left to honour here is someone explicitly asking for
+    # another pass at a document whose cached schema is wrong for it.
+    cached = None if (get_session(sid) or {}).get("force_reingest") else registry_lookup(doc_hash)
     if cached:
         # A registry entry that came from a published catalog form carries its
         # catalog_id. Attaching the guide here means someone who uploads their
@@ -66,6 +69,7 @@ def lambda_handler(event, _context):
             "doc_hash": doc_hash,
             "cache_hit": True,
             "cached_schema_key": cached["schema_key"],
+            "cached_form_map_key": cached.get("form_map_key", ""),
             # Pre-populated so enrich's `if cache_hit: return event`
             # short-circuit stays valid and finalize can read event["fields"]
             # uniformly on either path.

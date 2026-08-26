@@ -99,7 +99,7 @@ function startApp(api, cfg, session) {
   appEl.classList.remove("hidden");
   progressEl.textContent = `${session.field_count ?? state.fields.length} fields`;
 
-  initViewer(document.getElementById("viewer-pane"));
+  initViewer(document.getElementById("viewer-pane"), api, onBoxPlaced);
   initFieldsPanel(document.getElementById("fields-panel"), api, onNeedsRefetch);
   initRender(document.getElementById("render-panel"), api);
   // Only appears when this form has a guide — i.e. it came from the catalog,
@@ -122,6 +122,17 @@ function startApp(api, cfg, session) {
   );
 
   notify();
+
+  /** A box was dragged. The move is already applied locally and saved; this
+   * only reports whether the save actually landed, because an optimistic
+   * update that silently failed would leave the page and the document
+   * disagreeing about where a value is going to be stamped. */
+  function onBoxPlaced(fieldId, error) {
+    const label = state.fieldsById.get(fieldId)?.label || fieldId;
+    progressEl.textContent = error
+      ? `Could not save the box for ${label}: ${error.message}`
+      : `Placed ${label}`;
+  }
 
   let refetching = false;
   async function onNeedsRefetch(reason) {

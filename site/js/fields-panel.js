@@ -9,6 +9,7 @@ import {
   applyFieldUpdate,
   toggleSelected,
   setSectionSelected,
+  setPlacing,
   fieldsBySection,
 } from "./state.js";
 
@@ -137,7 +138,45 @@ function fieldRow(f) {
     row.appendChild(banner);
   }
 
+  // Ingest could not work out where this box is, so it is drawn nowhere on the
+  // page and the renderer refuses to export a value sitting in it. Saying so
+  // here is the whole point: an unplaced field that looked filled would be
+  // filed as a complete form and silently be missing an answer.
+  if (f.bbox_confidence === "low") {
+    row.classList.add("unplaced");
+    row.appendChild(placeBanner(f));
+  }
+
   return row;
+}
+
+function placeBanner(f) {
+  const banner = document.createElement("div");
+  banner.className = "place-banner";
+
+  const text = document.createElement("span");
+  const isPlacing = state.placingFieldId === f.field_id;
+  text.textContent = isPlacing
+    ? "Now drag a box around this field on the document."
+    : `This box has no place on the page${f.bbox_note ? ` \u2014 ${f.bbox_note}` : ""}. ` +
+      "It will be left out of the export.";
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "small";
+  btn.textContent = isPlacing ? "Cancel" : "Place it";
+  btn.addEventListener("click", () => {
+    if (isPlacing) {
+      setPlacing(null);
+      return;
+    }
+    // Placing mode has to be on for the page to accept a draw gesture.
+    state.placing = true;
+    setPlacing(f.field_id);
+  });
+
+  banner.append(text, btn);
+  return banner;
 }
 
 function inputFor(f, v) {

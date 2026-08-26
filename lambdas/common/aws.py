@@ -13,6 +13,7 @@ _ddb_table = None
 _s3 = None
 _bedrock = None
 _sfn = None
+_textract = None
 _apigw_ws: dict[str, object] = {}
 
 
@@ -79,6 +80,26 @@ def sfn():
     if _sfn is None:
         _sfn = boto3.client("stepfunctions")
     return _sfn
+
+
+def textract():
+    """Only reached when a document has no text layer at all — a scan or a
+    photograph. Everything else gets its geometry out of the PDF itself, for
+    free and exactly, so this is a fallback and not the main path.
+
+    Generous read timeout: AnalyzeDocument with FORMS and TABLES on a dense
+    page is seconds, not milliseconds, and the caller is a batch step with a
+    600s budget rather than a request someone is waiting on.
+    """
+    global _textract
+    if _textract is None:
+        _textract = boto3.client(
+            "textract",
+            region_name=os.environ.get("AWS_REGION"),
+            config=BotoConfig(connect_timeout=10, read_timeout=60,
+                              retries={"max_attempts": 2, "mode": "standard"}),
+        )
+    return _textract
 
 
 def apigw_ws(endpoint: str):

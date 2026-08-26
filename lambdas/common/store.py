@@ -126,11 +126,64 @@ def copy_schema(src_key: str, sid: str) -> str:
     return dst
 
 
+# The form map: where each box sits and what tells apart two boxes that share a
+# label. Markdown, next to the schema, for the same reason the guide is markdown
+# — a person has to be able to read it and see that a box was misunderstood.
+# Written once per document at ingest and read on every agent turn.
+
+def put_form_map(sid: str, markdown: str) -> str:
+    key = f"schemas/{sid}/form-map.md"
+    s3().put_object(
+        Bucket=config.ARTIFACTS_BUCKET,
+        Key=key,
+        Body=(markdown or "").encode("utf-8"),
+        ContentType="text/markdown; charset=utf-8",
+    )
+    return key
+
+
+def load_form_map(key: str | None) -> str:
+    """Missing is not an error. Sessions created before this existed, and
+    AcroForm documents whose geometry never needed a map, simply have none —
+    the agent then works the way it always did."""
+    if not key:
+        return ""
+    try:
+        return s3().get_object(Bucket=config.ARTIFACTS_BUCKET, Key=key)["Body"].read().decode("utf-8")
+    except Exception:
+        return ""
+
+
+def copy_form_map(src_key: str, sid: str) -> str:
+    dst = f"schemas/{sid}/form-map.md"
+    s3().copy_object(
+        Bucket=config.ARTIFACTS_BUCKET,
+        CopySource={"Bucket": config.ARTIFACTS_BUCKET, "Key": src_key},
+        Key=dst,
+    )
+    return dst
+
+
 # ------------------------------------------------------------------ registry
 
 def registry_lookup(doc_hash: str) -> dict | None:
+    """The cached schema for this document, or None to re-ingest.
+
+    An entry built by an older pipeline generation is deliberately reported as a
+    miss. The registry has no TTL — that is the point of it — so without this
+    check a form whose boxes were guessed by the old vision-only pass would keep
+    being served from cache forever, and the only cure would be deleting the
+    DynamoDB item by hand. See `config.SCHEMA_VERSION`.
+    """
     r = ddb().get_item(Key={"PK": f"FORM#{doc_hash}", "SK": "SCHEMA"})
-    return _clean(r["Item"]) if "Item" in r else None
+    if "Item" not in r:
+        return None
+
+    item = _clean(r["Item"])
+    # Absent means version 1: entries written before the field existed.
+    if int(item.get("schema_version") or 1) < config.SCHEMA_VERSION:
+        return None
+    return item
 
 
 def registry_store(
@@ -140,6 +193,7 @@ def registry_store(
     form_name: str = "",
     catalog_id: str = "",
     guide_key: str = "",
+    form_map_key: str = "",
 ) -> None:
     """Government forms repeat. The second user to upload the same form gets
     the schema instantly and never pays for the vision pass.
@@ -157,6 +211,11 @@ def registry_store(
             "form_name": form_name,
             "catalog_id": catalog_id,
             "guide_key": guide_key,
+            "form_map_key": form_map_key,
+            # Which pipeline built it. A later generation reads this and treats
+            # an older entry as a miss, so an improvement to ingest reaches
+            # documents it already cached instead of stopping at them.
+            "schema_version": config.SCHEMA_VERSION,
             "created_at": _now(),
             # No TTL: the registry is the asset that makes this cheap over time.
         }

@@ -6,16 +6,20 @@ out what the file structurally tells us.
 
   pdf_acroform  field names, types, checkbox on-states, choice options and
                 widget rects, straight from the PDF
-  pdf_flat      nothing but page images; detection happens in enrich
+  pdf_flat      page images, plus the page's ruled cells and text geometry —
+                the *candidate regions* a person could write in. Which field
+                goes in which region is enrich's job; where the regions are is
+                answered here, from the PDF, and never guessed.
   docx          convert to PDF for display, collect placeholder tokens
 """
 import io
+import json
 import logging
 import subprocess
 import tempfile
 from pathlib import Path
 
-from common import config
+from common import config, geometry as geo, ocr
 from common.aws import s3
 from common.store import update_session
 
@@ -43,11 +47,25 @@ def lambda_handler(event, _context):
     candidates = [] if event.get("cache_hit") else (
         _acroform_fields(body) if doc_type == "pdf_acroform" else []
     )
-    page_keys = _rasterize(sid, body)
+
+    # Region scanning only earns its keep on the flat path. An AcroForm already
+    # carries exact widget rects, and a cache hit is reusing a schema whose
+    # geometry was settled the first time round.
+    scan = not event.get("cache_hit") and doc_type != "pdf_acroform"
+    page_keys, annotated_keys, pages = _rasterize(sid, body, scan=scan)
+
+    out = {**event, "candidates": candidates, "page_keys": page_keys}
+    if scan:
+        # Written to S3 rather than carried on the event: Step Functions caps
+        # state at 256KB and a dense form's region table goes straight past it.
+        out["regions_key"] = _put_json(f"derived/{sid}/regions.json", pages)
+        out["annotated_keys"] = annotated_keys
+        log.info("scanned %d candidate regions over %d pages",
+                 sum(len(p["regions"]) for p in pages), len(pages))
 
     update_session(sid, page_keys=page_keys, page_count=len(page_keys), progress="enriching")
     log.info("extracted %d candidates over %d pages", len(candidates), len(page_keys))
-    return {**event, "candidates": candidates, "page_keys": page_keys}
+    return out
 
 
 # ------------------------------------------------------------------ acroform
@@ -90,7 +108,7 @@ def _acroform_fields(body: bytes) -> list[dict]:
             if name in simple:
                 simple[name]["page"] = page_index + 1
                 simple[name]["rect"] = [float(x) for x in rect] if rect else None
-                simple[name]["bbox"] = _norm(rect, pw, ph)
+                simple[name]["bbox"] = geo.norm(rect, pw, ph)
             elif name in radio_names:
                 try:
                     on = [v for v in obj["/AP"]["/N"] if v != "/Off"]
@@ -102,9 +120,9 @@ def _acroform_fields(body: bytes) -> list[dict]:
                     "name": name, "field_id": _slug(name), "type": "radio_group",
                     "page": page_index + 1, "radio_options": [], "bbox": None,
                 })
-                grp["radio_options"].append({"value": on[0], "bbox": _norm(rect, pw, ph)})
+                grp["radio_options"].append({"value": on[0], "bbox": geo.norm(rect, pw, ph)})
                 if grp["bbox"] is None:
-                    grp["bbox"] = _norm(rect, pw, ph)
+                    grp["bbox"] = geo.norm(rect, pw, ph)
 
     out = [f for f in simple.values() if f.get("page")]
     out.extend(radios.values())
@@ -152,20 +170,6 @@ def _full_name(ann) -> str | None:
     return ".".join(reversed(parts)) if parts else None
 
 
-def _norm(rect, pw: float, ph: float):
-    """PDF rect [left, bottom, right, top] with a bottom-left origin, to
-    normalized [x0, y0, x1, y1] with a top-left origin."""
-    if not rect:
-        return [0.0, 0.0, 0.0, 0.0]
-    left, bottom, right, top = (float(x) for x in rect)
-    return [
-        round(min(left, right) / pw, 5),
-        round(1.0 - max(top, bottom) / ph, 5),
-        round(max(left, right) / pw, 5),
-        round(1.0 - min(top, bottom) / ph, 5),
-    ]
-
-
 def _slug(name: str) -> str:
     keep = [c if (c.isalnum() or c in "._-") else "_" for c in str(name)]
     return "".join(keep)[:80] or "field"
@@ -173,26 +177,74 @@ def _slug(name: str) -> str:
 
 # ----------------------------------------------------------------- rasterize
 
-def _rasterize(sid: str, body: bytes) -> list[str]:
-    """Page images for the vision pass and for the viewer.
+def _rasterize(sid: str, body: bytes, scan: bool = False) -> tuple[list[str], list[str], list[dict]]:
+    """Page images for the viewer, and — when `scan` — the page geometry and a
+    numbered copy of each image for the vision pass.
 
     pypdfium2 ships as a self-contained wheel — no poppler binary, no
-    ImageMagick, so it works in a plain Lambda zip.
+    ImageMagick, so it works in a plain Lambda zip. It is already open here for
+    rendering, so reading the text and path geometry off the same page objects
+    costs one extra pass over a document we have in memory anyway.
+
+    Two images per page, deliberately. The clean one is what the person sees in
+    the viewer; the annotated one, with a red number in every candidate region,
+    goes only to the model. Drawing region ids into the image the user looks at
+    would be answering a question nobody asked.
     """
     import pypdfium2 as pdfium
 
-    keys = []
+    keys, annotated, pages = [], [], []
     pdf = pdfium.PdfDocument(body)
     scale = config.RASTER_DPI / 72.0
+
     for i in range(min(len(pdf), config.MAX_INGEST_PAGES)):
-        bitmap = pdf[i].render(scale=scale)
+        page = pdf[i]
         buf = io.BytesIO()
-        bitmap.to_pil().save(buf, format="PNG", optimize=True)
-        key = f"derived/{sid}/page-{i + 1:03d}.png"
-        s3().put_object(Bucket=config.ARTIFACTS_BUCKET, Key=key, Body=buf.getvalue(),
-                        ContentType="image/png", ServerSideEncryption="aws:kms")
-        keys.append(key)
-    return keys
+        page.render(scale=scale).to_pil().save(buf, format="PNG", optimize=True)
+        png = buf.getvalue()
+        keys.append(_put_png(f"derived/{sid}/page-{i + 1:03d}.png", png))
+
+        if not scan:
+            continue
+
+        # A failure here must not take the upload down with it: no regions
+        # means enrich falls back to estimating, which is where it started.
+        try:
+            regions = geo.candidate_regions(page)
+            text = geo.text_boxes(page)
+        except Exception:
+            log.exception("geometry scan failed on page %d", i + 1)
+            regions, text = [], []
+
+        # No text and no boxes means there is nothing in the file to read: the
+        # page is a scan or a photograph. That, and only that, is worth paying
+        # Textract for — a digitally produced form already told us everything
+        # for free, and asking anyway would bill every upload for an answer we
+        # have.
+        if not text and not regions:
+            log.info("page %d has no text layer; falling back to OCR", i + 1)
+            regions = ocr.regions_from_image(png)
+
+        pages.append({"page": i + 1, "regions": regions, "text": text})
+        annotated.append(_put_png(f"derived/{sid}/page-{i + 1:03d}-regions.png",
+                                  geo.annotate(png, regions)))
+
+    return keys, annotated, pages
+
+
+def _put_png(key: str, body: bytes) -> str:
+    s3().put_object(Bucket=config.ARTIFACTS_BUCKET, Key=key, Body=body,
+                    ContentType="image/png", ServerSideEncryption="aws:kms")
+    return key
+
+
+def _put_json(key: str, payload) -> str:
+    s3().put_object(
+        Bucket=config.ARTIFACTS_BUCKET, Key=key,
+        Body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        ContentType="application/json; charset=utf-8", ServerSideEncryption="aws:kms",
+    )
+    return key
 
 
 # ---------------------------------------------------------------- docx->pdf

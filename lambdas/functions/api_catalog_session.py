@@ -15,7 +15,14 @@ import uuid
 
 from common import catalog as cat, config
 from common.api import ApiError, caller, handler, path_param
-from common.store import copy_schema, create_session, load_schema, seed_fields, update_session
+from common.store import (
+    copy_schema,
+    create_session,
+    load_schema,
+    put_form_map,
+    seed_fields,
+    update_session,
+)
 
 
 @handler
@@ -36,6 +43,12 @@ def lambda_handler(event, _context):
     fields = load_schema(schema_key)
     seed_fields(sid, fields)
 
+    # Copied rather than referenced, for the same reason the schema is: a person
+    # who moves a box in this session must not edit the catalog's master. That
+    # is a separate, deliberate act — see api_catalog_update's schema_updates.
+    form_map = cat.load_guide_markdown(entry.get("form_map_key"))
+    form_map_key = put_form_map(sid, form_map) if form_map else ""
+
     session = update_session(
         sid,
         status="ready",
@@ -45,6 +58,7 @@ def lambda_handler(event, _context):
         doc_bucket=config.ARTIFACTS_BUCKET,
         doc_type=entry.get("doc_type"),
         schema_key=schema_key,
+        form_map_key=form_map_key,
         page_keys=entry.get("page_keys") or [],
         page_count=len(entry.get("page_keys") or []),
         field_count=len(fields),

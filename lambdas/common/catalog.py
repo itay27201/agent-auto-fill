@@ -51,7 +51,8 @@ DRAFT, PUBLISHED = "draft", "published"
 # Listing rows carry only what the card grid draws. The full entry is a second
 # get_item away, and browsing shouldn't pay for page_keys on every row.
 _LISTING = ("catalog_id", "name", "agency", "description", "language",
-            "doc_type", "field_count", "status", "has_guide", "updated_at")
+            "doc_type", "field_count", "status", "has_guide", "updated_at",
+            "schema_version")
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 
@@ -90,6 +91,14 @@ def schema_key(cid: str) -> str:
 
 def guide_key(cid: str) -> str:
     return f"catalog/{cid}/guide.md"
+
+
+def form_map_key(cid: str) -> str:
+    """Where each box sits on the page. Generated at ingest from the document's
+    own geometry, and — unlike the guide — not something the authoring agent
+    writes. It is a projection of the schema, so a person edits it by moving a
+    box in the viewer, not by editing prose."""
+    return f"catalog/{cid}/form-map.md"
 
 
 def pages_prefix(cid: str) -> str:
@@ -140,7 +149,34 @@ def get(cid: str) -> dict:
     r = ddb().get_item(Key={"PK": f"CATALOG#{cid}", "SK": "META"})
     if "Item" not in r:
         raise NotFound(cid)
-    return _decimals_to_numbers(r["Item"])
+    return with_staleness(_decimals_to_numbers(r["Item"]))
+
+
+def is_stale(entry: dict) -> bool:
+    """Whether this entry's boxes were built by an older pipeline.
+
+    Absent means version 1 — an entry written before the field existed, which
+    means its boxes came from the vision-only pass that estimated coordinates
+    from a page image rather than reading them out of the PDF.
+
+    Reported, never acted on. The registry re-ingests a stale entry by itself
+    because nothing there is hand-made; a catalog entry may carry boxes someone
+    placed by hand and a guide someone reviewed, so re-running ingest over it is
+    a person's call.
+    """
+    return int(entry.get("schema_version") or 1) < config.SCHEMA_VERSION
+
+
+def with_staleness(entry: dict) -> dict:
+    if is_stale(entry):
+        entry["schema_stale"] = True
+        entry["schema_stale_note"] = (
+            "The boxes on this form were placed by an older version of the "
+            "pipeline, which estimated them from a page image instead of reading "
+            "them out of the document. Re-upload the blank form to a new session "
+            "and promote it again to rebuild them."
+        )
+    return entry
 
 
 def update(cid: str, **attrs) -> dict:
@@ -166,7 +202,7 @@ def listing(status: str | None = PUBLISHED) -> list[dict]:
             row = _decimals_to_numbers(it)
             if status and row.get("status") != status:
                 continue
-            out.append({k: row.get(k) for k in _LISTING if k in row})
+            out.append(with_staleness({k: row.get(k) for k in _LISTING if k in row}))
         if "LastEvaluatedKey" not in r:
             break
         kwargs["ExclusiveStartKey"] = r["LastEvaluatedKey"]
@@ -245,6 +281,18 @@ def put_schema(cid: str, fields: list[dict]) -> str:
         Key=key,
         Body=json.dumps(fields, ensure_ascii=False).encode("utf-8"),
         ContentType="application/json; charset=utf-8",
+        ServerSideEncryption="aws:kms",
+    )
+    return key
+
+
+def put_form_map(cid: str, markdown: str) -> str:
+    key = form_map_key(cid)
+    s3().put_object(
+        Bucket=config.ARTIFACTS_BUCKET,
+        Key=key,
+        Body=(markdown or "").encode("utf-8"),
+        ContentType="text/markdown; charset=utf-8",
         ServerSideEncryption="aws:kms",
     )
     return key

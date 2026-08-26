@@ -22,6 +22,19 @@ ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET", "")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
 BEDROCK_REGION = os.environ.get("BEDROCK_REGION", os.environ.get("AWS_REGION", "eu-central-1"))
 
+# Defining a form is a rare, expensive, human-reviewed act; filling one is
+# frequent and must be cheap. So the two paths run different models.
+#
+# Reading a dense RTL government form and deciding which ruled cell each label
+# belongs to happens ONCE per form -- the registry and the catalog make sure of
+# that -- and every session afterwards inherits the answer. A better model there
+# costs a few cents once and is paid back on the first re-upload; a better model
+# in the chat agent would be billed on every turn of every session forever.
+#
+# Opus 4.8 is $5/$25 per MTok against Sonnet 4.6's $3/$15. That premium applies
+# to ingest and to the authoring agent's bulk note pass, and to nothing else.
+INGEST_MODEL_ID = os.environ.get("INGEST_MODEL_ID", "eu.anthropic.claude-opus-4-8")
+
 # The IAM policy Resource must be the inference-profile ARN, not the base
 # model ARN:
 #   arn:aws:bedrock:{region}:{account}:inference-profile/eu.anthropic.claude-sonnet-4-6
@@ -32,6 +45,33 @@ BEDROCK_REGION = os.environ.get("BEDROCK_REGION", os.environ.get("AWS_REGION", "
 # the gap between chunks. botocore's 60s default is what made ingest fail.
 BEDROCK_READ_TIMEOUT = int(os.environ.get("BEDROCK_READ_TIMEOUT", "300"))
 
+# Reasoning effort for the define-once pass. Deciding which of forty ruled cells
+# a Hebrew label belongs to is exactly the work extra thinking buys, and it is
+# billed once per form.
+INGEST_EFFORT = os.environ.get("INGEST_EFFORT", "high")
+
+
+# Models that removed the sampling parameters. Matched as substrings because
+# the same model arrives as "claude-opus-4-8", "anthropic.claude-opus-4-8" and
+# "eu.anthropic.claude-opus-4-8" depending on who is calling.
+_NO_SAMPLING = (
+    "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5",
+    "claude-sonnet-5", "claude-fable-5", "claude-mythos-5",
+)
+
+
+def accepts_sampling(model_id: str) -> bool:
+    """Whether this model still takes `temperature` / `top_p` / `top_k`.
+
+    Anthropic removed the sampling parameters on the reasoning models: Opus 4.7
+    and later, Sonnet 5 and Fable 5 reject them with a 400. Opus 4.6 and Sonnet
+    4.6 still accept them, which is why `invoke_json` has always been able to
+    send `temperature: 0` — and why adding an Opus tier is the thing that breaks
+    it. Getting this wrong is not a slightly worse answer, it is a
+    ValidationException on every single ingest.
+    """
+    return not any(m in model_id for m in _NO_SAMPLING)
+
 MAX_AGENT_TURNS = int(os.environ.get("MAX_AGENT_TURNS", "8"))
 # Generous on purpose. Only tokens actually generated are billed, so a high
 # ceiling costs nothing on a normal turn — but a reply truncated mid-tool-call
@@ -40,6 +80,23 @@ MAX_AGENT_TURNS = int(os.environ.get("MAX_AGENT_TURNS", "8"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "16384"))
 
 # ---------------------------------------------------------------- ingest
+# Which generation of the pipeline built a cached schema.
+#
+# The registry is keyed by document SHA-256 and has no TTL, which is what makes
+# the second upload of a form nearly free. It also means a schema built by an
+# older, worse pipeline is inherited forever: re-uploading the identical file
+# hashes the same, hits the cache, and never re-runs ingest at all. There was no
+# way to invalidate it short of deleting the DynamoDB item by hand.
+#
+# So a cache hit must match on version as well as on hash. Bump this whenever a
+# change alters what ingest *produces* — not when it only changes how it gets
+# there — and every previously-cached form re-ingests once, automatically, the
+# next time somebody uploads it.
+#
+#   1  vision-estimated bboxes, no geometry, no form map
+#   2  boxes from the PDF's own ruled geometry, sanity-checked, + form-map.md
+SCHEMA_VERSION = int(os.environ.get("SCHEMA_VERSION", "2"))
+
 INGEST_STATE_MACHINE_ARN = os.environ.get("INGEST_STATE_MACHINE_ARN", "")
 RASTER_DPI = int(os.environ.get("RASTER_DPI", "150"))
 MAX_INGEST_PAGES = int(os.environ.get("MAX_INGEST_PAGES", "20"))

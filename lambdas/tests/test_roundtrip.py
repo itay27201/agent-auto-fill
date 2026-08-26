@@ -145,10 +145,20 @@ def main():
 
     # ---- overlay path on the same doc ------------------------------------
     from functions.api_render import _stamp_overlay
-    stamped = _stamp_overlay(src, fields, values)
+    stamped, unplaced = _stamp_overlay(src, fields, values)
     (out / "stamped.pdf").write_bytes(stamped)
     assert len(stamped) > 1000
+    assert unplaced == [], unplaced
     print(f"overlay    -> wrote {len(stamped)} bytes")
+
+    # A field whose box was rejected at ingest must be reported, not stamped at
+    # the origin on top of whatever the form prints there.
+    lost = [sch.FormField(field_id="ghost", label="Nowhere", page=1,
+                          bbox=[0, 0, 0, 0], bbox_confidence="low")]
+    _, missing = _stamp_overlay(src, fields + lost,
+                                {**values, "ghost": {"value": "Bleader"}})
+    assert missing == ["ghost"], missing
+    print("overlay    -> unplaced field reported, not drawn")
 
     print("\nALL CHECKS PASSED")
 

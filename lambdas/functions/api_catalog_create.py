@@ -12,9 +12,9 @@ them would work for a week and then quietly stop.
 
 The entry lands as a **draft**. Publishing is a separate, human act.
 """
-from common import catalog as cat, guide as gd
+from common import catalog as cat, config, guide as gd
 from common.api import ApiError, body_of, caller, handler
-from common.store import get_session, load_schema
+from common.store import get_session, load_form_map, load_schema
 
 
 @handler
@@ -44,6 +44,11 @@ def lambda_handler(event, _context):
 
     cat.copy_from_docs(sess["doc_key"], source)
     schema_key = cat.put_schema(cid, fields)
+    # The layout the session established travels with the schema. Losing it here
+    # would mean every person who picks this form from the catalog gets the
+    # field list without the map that tells its repeated labels apart.
+    form_map = load_form_map(sess.get("form_map_key"))
+    form_map_key = cat.put_form_map(cid, form_map) if form_map else ""
     page_keys = cat.copy_pages(cid, sess.get("page_keys") or [])
 
     language = (body.get("language") or "").strip()
@@ -66,6 +71,13 @@ def lambda_handler(event, _context):
         "doc_hash": sess.get("doc_hash") or "",
         "source_key": source,
         "schema_key": schema_key,
+        "form_map_key": form_map_key,
+        # Which pipeline generation built these boxes. Unlike the registry, a
+        # stale catalog entry is never re-ingested automatically: its schema may
+        # carry boxes a person placed by hand and its guide was reviewed, and
+        # throwing that away to pick up a better default is not a trade the
+        # system gets to make. It is reported as stale and somebody decides.
+        "schema_version": config.SCHEMA_VERSION,
         "page_keys": page_keys,
         "guide_key": guide_key,
         "has_guide": False,

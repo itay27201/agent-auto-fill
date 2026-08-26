@@ -40,6 +40,14 @@ export function createApi(apiUrl) {
         body: JSON.stringify({ updates }),
       });
     },
+    /** Move field boxes. Separate from setFields because this rewrites the
+     * schema, not values — see lambdas/functions/api_set_schema.py. */
+    setSchema(sid, updates) {
+      return request(apiUrl, `/sessions/${encodeURIComponent(sid)}/schema`, {
+        method: "PATCH",
+        body: JSON.stringify({ updates }),
+      });
+    },
     validate(sid) {
       return request(apiUrl, `/sessions/${encodeURIComponent(sid)}/validate`, { method: "POST" });
     },

@@ -10,9 +10,20 @@ Parameters:
     Type: String
     Default: eu.anthropic.claude-sonnet-4-6
     Description: >-
+      The chat tier: both agents, billed on every turn of every session.
       Inference profile id, not the base model id. Sonnet 4.6 cannot be
       invoked on demand as anthropic.claude-sonnet-4-6; it needs a geography
       prefix (eu./us./apac./global.). Pick by data-residency requirement.
+  IngestModelId:
+    Type: String
+    Default: eu.anthropic.claude-opus-4-8
+    Description: >-
+      The define-once tier: the ingest vision pass and the authoring agent's
+      bulk field-note batch. Reading a dense form and deciding which ruled
+      cell each label belongs to happens once per document -- the registry
+      and the catalog guarantee it -- and every session afterwards inherits
+      the answer, so a stronger model here is paid for once and amortised
+      over every fill. Same geography-prefix rule as above.
   AllowedOrigin:
     Type: String
     Default: "*"
@@ -41,6 +52,7 @@ Globals:
         # depend on each other. Each function below declares only the
         # bucket(s) it actually uses.
         BEDROCK_MODEL_ID: !Ref BedrockModelId
+        INGEST_MODEL_ID: !Ref IngestModelId
         BEDROCK_REGION: !Ref AWS::Region
         ALLOWED_ORIGIN: !Ref AllowedOrigin
         POWERTOOLS_LOG_LEVEL: INFO
@@ -235,6 +247,31 @@ Resources:
         Patch:
           Type: Api
           Properties: { RestApiId: !Ref Api, Path: "/sessions/{session_id}/fields", Method: PATCH }
+
+  # Moving a box, not writing a value. Separate from SetFieldsFn because the
+  # two have different concurrency stories: field values are per-item
+  # conditional writes shared by two writers, geometry is one S3 object
+  # rewritten whole by the one person looking at the page. It needs S3 *Crud*
+  # where SetFieldsFn needs only Read, and GenerateDataKey to put the object
+  # back into the KMS-encrypted bucket.
+  SetSchemaFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: functions/api_set_schema.lambda_handler
+      Environment: { Variables: { ARTIFACTS_BUCKET: !Ref ArtifactsBucket } }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3CrudPolicy: { BucketName: !Ref ArtifactsBucket }
+        - KMSDecryptPolicy: { KeyId: !Ref Key }
+        - Statement:
+            - Effect: Allow
+              Action: kms:GenerateDataKey*
+              Resource: !GetAtt Key.Arn
+      Events:
+        Patch:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: "/sessions/{session_id}/schema", Method: PATCH }
 
   ValidateFn:
     Type: AWS::Serverless::Function
@@ -495,6 +532,14 @@ Resources:
             - Effect: Allow
               Action: kms:GenerateDataKey*
               Resource: !GetAtt Key.Arn
+        # Only reached for a page with no text layer at all -- a scan. A
+        # digitally produced form's geometry is read out of the PDF for free,
+        # so this is billed on the rare document and not on every upload.
+        # AnalyzeDocument takes no resource-level ARN.
+        - Statement:
+            - Effect: Allow
+              Action: textract:AnalyzeDocument
+              Resource: "*"
 
   EnrichFn:
     Type: AWS::Serverless::Function
@@ -513,9 +558,14 @@ Resources:
               Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
               # Both ARNs are needed: the inference profile you call, and the
               # foundation models it can route to across the geography.
+              #
+              # This is the define-once tier, so it is the ingest model here and
+              # not the chat one. The two are listed separately on purpose --
+              # the filling agent below gets the chat profile only, so no chat
+              # turn can reach the expensive model even by misconfiguration.
               Resource:
-                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
-                - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6"
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${IngestModelId}"
+                - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-8"
 
   FinalizeFn:
     Type: AWS::Serverless::Function
@@ -684,9 +734,14 @@ Resources:
         - Statement:
             - Effect: Allow
               Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+              # Both tiers: this agent's conversation turns run on the chat
+              # model, but `note_batch` writes a whole form's field notes
+              # through `llm_json`, which is the define-once path.
               Resource:
                 - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${IngestModelId}"
                 - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6"
+                - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-8"
             - Effect: Allow
               Action: execute-api:ManageConnections
               Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"

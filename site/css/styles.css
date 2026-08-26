@@ -573,10 +573,21 @@ a:hover { text-decoration: underline; }
   background: var(--panel);
   display: grid;
   /* header · drafts rail · panel · validate · chat. The rail collapses to
-     nothing when it has nothing to say, so the row costs zero until it does. */
-  grid-template-rows: auto auto 1fr auto 40vh;
+     nothing when it has nothing to say, so the row costs zero until it does.
+     Every child is placed explicitly below: the rail and the guide panel both
+     ship `hidden`, and a display:none child leaves grid flow entirely — under
+     auto-placement that shifts every track up and hands the chat pane an
+     `auto` row, which collapses it to a sliver. */
+  grid-template-rows: auto auto minmax(0, 1fr) auto minmax(220px, 45vh);
   min-height: 0;
 }
+.side > .side-header  { grid-row: 1; }
+.side > .drafts-bar   { grid-row: 2; }
+/* Alternates — one tab at a time — so they share the scrolling track. */
+.side > .fields-panel,
+.side > .guide-panel  { grid-row: 3; }
+.side > .validate-bar { grid-row: 4; }
+.side > .chat-pane    { grid-row: 5; }
 
 /* Fixed rail, never scrolled away with the field list — see session.html. */
 .drafts-bar {
@@ -781,7 +792,14 @@ a:hover { text-decoration: underline; }
 .awaiting-list .issue-row { border-color: rgba(220, 38, 38, 0.25); background: var(--danger-soft); color: var(--danger); }
 .awaiting-list .confirm-row { border-color: rgba(240, 180, 41, 0.35); background: var(--draft-bg); }
 
-.chat-pane { border-top: 1px solid var(--border); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; background: var(--panel); }
+/* Placed explicitly for the same reason as `.side`: the scope chip ships
+   `hidden`, and a display:none child leaves grid flow — auto-placement then
+   hands the log the `auto` row and the composer the `1fr`, which strands a
+   band of blank panel above the textarea and shrinks the log to its content. */
+.chat-pane { border-top: 1px solid var(--border); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; background: var(--panel); }
+.chat-pane > .chat-scope { grid-row: 1; }
+.chat-pane > .chat-log   { grid-row: 2; }
+.chat-pane > .chat-input { grid-row: 3; }
 .chat-scope {
   padding: 7px 10px;
   font-size: 12px;
@@ -873,7 +891,10 @@ a:hover { text-decoration: underline; }
      buttons and their gaps can push past the pane on a narrow layout. */
   min-width: 0;
   height: 44px;
-  max-height: 120px;
+  /* Sole ceiling for autosize() in js/chat.js, which sets an inline height and
+     lets this clamp it. Viewport-relative because a fixed cap tall enough to
+     be useful here would eat the whole log on a short window. */
+  max-height: min(200px, 22vh);
   min-height: 36px;
   border-radius: var(--radius);
   background: var(--panel-soft);
@@ -974,8 +995,20 @@ a:hover { text-decoration: underline; }
 .setup-banner input { margin: 6px 0; }
 
 @media (max-width: 880px) {
-  .app { grid-template-columns: 1fr; grid-template-rows: 56px 55vh 1fr; }
-  .side { border-left: none; border-top: 1px solid var(--border); grid-template-rows: auto auto minmax(160px, 1fr) auto 34vh; }
+  .app { grid-template-columns: 1fr; grid-template-rows: 56px 26vh minmax(0, 1fr); }
+  /* Placement is inherited from the base rules; only the tracks change here.
+     Stacked, the header and validate rail already cost ~160px, so a fixed
+     chat height can exceed what is left and push itself off the bottom of a
+     short phone. Split the remainder two parts chat to one part fields
+     instead: it cannot overflow, and both keep a usable share at any height. */
+  .side {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    grid-template-rows: auto auto minmax(0, 1fr) auto minmax(130px, 2fr);
+  }
+  /* Stacked, the chat pane is a fraction of an already short column — a
+     desktop-sized composer would fill it and push itself off the bottom. */
+  .chat-input textarea { max-height: min(120px, 10vh); }
 }
 
 /* ============================================================== catalog ==

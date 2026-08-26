@@ -8,9 +8,10 @@ import { createActivityLog } from "./activity.js";
 import { createVoiceInput } from "./voice.js";
 import { createSpeaker } from "./speak.js";
 
-// Grows the box to fit a dictated paragraph, which arrives all at once rather
-// than a line at a time the way typing does.
-const MAX_INPUT_HEIGHT = 120;
+// The box grows to fit a dictated paragraph, which arrives all at once rather
+// than a line at a time the way typing does — see autosize(). The ceiling lives
+// in `.chat-input textarea { max-height }` alone, because it has to shrink with
+// the viewport: a cap tall enough for a desktop pane overflows a phone's.
 
 let log, scopeChip, input, sendBtn, wsClient;
 let streamingBubble = null;
@@ -159,7 +160,7 @@ function insertTranscript(text) {
 
 function autosize() {
   input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight, MAX_INPUT_HEIGHT)}px`;
+  input.style.height = `${input.scrollHeight}px`;
 }
 
 function setBusy(busy) {

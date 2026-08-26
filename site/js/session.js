@@ -4,6 +4,7 @@ import { createWsClient } from "./ws-client.js";
 import { state, setSession, notify } from "./state.js";
 import { initViewer } from "./viewer.js";
 import { initFieldsPanel } from "./fields-panel.js";
+import { initDraftsBar, setOverflowing } from "./drafts-bar.js";
 import { initChat, wsHandlers } from "./chat.js";
 import { initRender } from "./render.js";
 import { initGuidePanel } from "./guide-panel.js";
@@ -97,10 +98,11 @@ function startApp(api, cfg, session) {
   setSession(session);
   hideLoading();
   appEl.classList.remove("hidden");
-  progressEl.textContent = `${session.field_count ?? state.fields.length} fields`;
+  setProgress(`${session.field_count ?? state.fields.length} fields`);
 
-  initViewer(document.getElementById("viewer-pane"), api, onBoxPlaced);
+  initViewer(document.getElementById("viewer-pane"), api, onBoxPlaced, setOverflowing);
   initFieldsPanel(document.getElementById("fields-panel"), api, onNeedsRefetch);
+  initDraftsBar(document.getElementById("drafts-bar"), api, onNeedsRefetch);
   initRender(document.getElementById("render-panel"), api);
   // Only appears when this form has a guide — i.e. it came from the catalog,
   // or the upload hash-matched a form somebody already documented.

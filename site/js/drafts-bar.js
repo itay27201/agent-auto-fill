@@ -137,15 +137,19 @@ function focusDraft(field) {
 }
 
 async function confirmCurrent(drafts) {
-  const current = drafts[reviewIndex];
+  // Read before confirming: applying the write re-renders, and render() ends the
+  // review when the index falls off the shortened list — so by the time this
+  // resumes, reviewIndex may already be null.
+  const idx = reviewIndex;
+  const current = drafts[idx];
   if (!current) return stopReview();
-  await confirmMany([current]);
+  if (!await confirmMany([current])) return;
 
-  // The list this ran against is stale now — the confirmed field has left it.
-  // Staying on the same index therefore lands on the next draft already.
+  // The confirmed field has left the list, so the same index is already the
+  // next draft. It only moves when someone confirmed out of order elsewhere.
   const remaining = draftFields();
   if (!remaining.length) return stopReview();
-  reviewIndex = Math.min(reviewIndex, remaining.length - 1);
+  reviewIndex = Math.min(idx, remaining.length - 1);
   render();
   focusDraft(remaining[reviewIndex]);
 }
@@ -154,8 +158,9 @@ async function confirmAll(drafts) {
   await confirmMany(drafts);
 }
 
+/** Resolves true when the batch was actually attempted. */
 async function confirmMany(fields) {
-  if (busy || !fields.length) return;
+  if (busy || !fields.length) return false;
   busy = true;
   render();
 
@@ -192,4 +197,5 @@ async function confirmMany(fields) {
     busy = false;
     render();
   }
+  return true;
 }

@@ -53,6 +53,13 @@
         <p>Fill directly, or select fields to discuss with the assistant.</p>
       </div>
 
+      <!-- Everything standing between a filled form and a filed one: unconfirmed
+           agent drafts (which strict rendering refuses to export) and values too
+           wide for their box (which the export silently cuts off). A fixed rail,
+           not part of the scrolling field list, because on a 97-field form the
+           list is exactly where these get lost. -->
+      <div class="drafts-bar hidden" id="drafts-bar"></div>
+
       <div class="fields-panel" id="fields-panel" data-side-panel="fields"></div>
       <div class="guide-panel hidden" id="guide-panel" data-side-panel="guide"></div>
 

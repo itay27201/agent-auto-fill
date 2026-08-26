@@ -35,21 +35,33 @@ let toolbar;
 let toggleBtn;
 let placeBtn;
 let api;
+let announcer;     // the floating "the assistant filled N" line over the pages
 let onPlaced;      // told what moved, so the panel and status can react
+let onOverflow;    // told which fields no longer fit their box
+let writtenTotal = 0;
+let announceTimer = null;
 let showValues = loadShowValues();
 let measureQueued = false;
 let drag = null;   // the gesture in flight; suppresses re-render mid-drag
 let justWritten = new Set();   // fields to animate on the next render — see markWritten
 
-export function initViewer(el, apiClient, placedCallback) {
+export function initViewer(el, apiClient, placedCallback, overflowCallback) {
   pane = el;
   api = apiClient;
   onPlaced = placedCallback || (() => {});
+  onOverflow = overflowCallback || (() => {});
   pane.innerHTML = "";
   toolbar = buildToolbar();
   container = document.createElement("div");
   container.className = "pages";
-  pane.append(toolbar, container);
+  // Floats over the pages rather than sitting in the side panel: what it counts
+  // is happening on the document, and a blind user gets the same sentence read
+  // out — until now, twelve fields could be filled with no notification at all.
+  announcer = document.createElement("div");
+  announcer.className = "agent-activity hidden";
+  announcer.setAttribute("role", "status");
+  announcer.setAttribute("aria-live", "polite");
+  pane.append(toolbar, container, announcer);
   // A box's size is a percentage of the page image, which is itself
   // responsive — so "does this value still fit" can only be answered after
   // layout settles, and again after every resize.
@@ -76,6 +88,22 @@ export function highlightField(fieldId, { block = "center" } = {}) {
  * unchanged must not flash just because something else was written. */
 export function markWritten(fieldIds) {
   for (const id of fieldIds) justWritten.add(id);
+}
+
+const ANNOUNCE_HOLD_MS = 3500;
+
+/** Say how much the agent has written this session. Called after the batch has
+ * been applied, so the draft count it quotes is the real one. */
+export function announceWrites(count, draftCount) {
+  if (!announcer || !count) return;
+  writtenTotal += count;
+  const filled = `The assistant filled ${writtenTotal} field${writtenTotal === 1 ? "" : "s"}`;
+  announcer.textContent = draftCount
+    ? `${filled} · ${draftCount} waiting for you`
+    : filled;
+  announcer.classList.remove("hidden");
+  clearTimeout(announceTimer);
+  announceTimer = setTimeout(() => announcer.classList.add("hidden"), ANNOUNCE_HOLD_MS);
 }
 
 function reducedMotion() {
@@ -509,6 +537,7 @@ function queueMeasure() {
 
 function measureOverflow() {
   if (!container) return;
+  const tooWide = [];
   for (const box of container.querySelectorAll(".field-box")) {
     const ink = box.querySelector(".field-value > .ink");
     const width = box.clientWidth;
@@ -518,7 +547,12 @@ function measureOverflow() {
     box.title = overflows
       ? `${box.dataset.label} — this value is wider than the field`.trim()
       : box.dataset.label;
+    if (overflows) tooWide.push(box.dataset.fieldId);
   }
+  // A title attribute is invisible on touch and to anyone not hovering, and
+  // this is the failure that silently truncates the exported file. Hand the
+  // list up so it can be said somewhere a person will actually read it.
+  onOverflow(tooWide);
 }
 
 function cssEscape(s) {

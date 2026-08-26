@@ -2,8 +2,8 @@
 // already opened. Renders streamed text, tool activity, and reacts to
 // field_updated/highlight events pushed mid-turn.
 
-import { state, onChange, applyFieldUpdates, clearSelection } from "./state.js";
-import { highlightField, markWritten } from "./viewer.js";
+import { state, onChange, applyFieldUpdates, clearSelection, draftFields } from "./state.js";
+import { highlightField, markWritten, announceWrites } from "./viewer.js";
 import { createActivityLog } from "./activity.js";
 import { createVoiceInput } from "./voice.js";
 import { createSpeaker } from "./speak.js";
@@ -19,13 +19,6 @@ let speaker = null;
 
 // Writes the agent has sent but that have not been applied yet — see flushWrites.
 let pendingWrites = null;
-let onWrites = () => {};
-
-/** Called with the field ids of each batch of agent writes, once applied.
- * The session uses it to keep a running count and announce it. */
-export function onAgentWrites(fn) {
-  onWrites = fn || (() => {});
-}
 
 export function initChat(els, ws, sttEndpoint) {
   ({ log, scopeChip, input, sendBtn } = els);
@@ -135,7 +128,7 @@ function flushWrites() {
   // does nothing when the box is already on screen, which is what keeps a long
   // batch from dragging the page around under someone trying to read it.
   highlightField(ids[0], { block: "nearest" });
-  onWrites(ids);
+  announceWrites(ids.length, draftFields().length);
 }
 
 function send() {

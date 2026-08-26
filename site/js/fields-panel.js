@@ -32,7 +32,42 @@ export function initFieldsPanel(el, apiClient, refetchFn) {
   container = el;
   api = apiClient;
   onNeedsRefetch = refetchFn;
+  container.addEventListener("keydown", onKeydown);
   onChange(render);
+}
+
+/** Confirming a batch of drafts without leaving the keyboard: Enter accepts the
+ * draft you are sitting on, arrows walk the list. Bound on the container rather
+ * than per input, because the panel rebuilds its whole DOM on every change and
+ * per-row listeners would be re-attached forty times a turn. */
+function onKeydown(e) {
+  const row = e.target.closest?.(".field-row");
+  if (!row) return;
+
+  if (e.key === "Enter" && row.classList.contains("draft")) {
+    // A textarea's Enter is a newline the person meant to type.
+    if (e.target.tagName === "TEXTAREA") return;
+    e.preventDefault();
+    const fieldId = row.dataset.fieldId;
+    confirmField(fieldId, (state.values[fieldId] || {}).version);
+    return;
+  }
+
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  // Arrows inside a <select> choose an option; that is what they are for.
+  if (e.target.tagName === "SELECT") return;
+  e.preventDefault();
+  moveFocus(row, e.key === "ArrowDown" ? 1 : -1);
+}
+
+function moveFocus(fromRow, step) {
+  const rows = Array.from(container.querySelectorAll(".field-row"));
+  const next = rows[rows.indexOf(fromRow) + step];
+  const target = next?.querySelector("input, textarea, select");
+  if (target) {
+    target.focus();
+    if (target.select) try { target.select(); } catch { /* not a text input */ }
+  }
 }
 
 function render() {

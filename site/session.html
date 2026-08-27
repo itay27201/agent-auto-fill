@@ -63,14 +63,36 @@
       <div class="fields-panel" id="fields-panel" data-side-panel="fields"></div>
       <div class="guide-panel hidden" id="guide-panel" data-side-panel="guide"></div>
 
+      <!-- One button. Validation, rendering and the download are one action
+           because they were never three decisions — nobody wants a compliance
+           check, they want their document, and the check is what the server
+           does on the way. Problems come back from the same click and land
+           below, where the button that caused them is. -->
       <div class="validate-bar" id="render-panel">
-        <span class="summary"></span>
-        <label>
-          <input type="checkbox" data-role="flatten" /> flatten
-        </label>
-        <button type="button" data-action="validate">Check</button>
-        <button type="button" class="primary" data-action="render" disabled>Render</button>
-        <a class="hidden" data-role="download" download>Download</a>
+        <span class="summary" role="status" aria-live="polite"></span>
+        <button type="button" class="primary" data-action="download">Download filled PDF</button>
+
+        <div class="render-secondary">
+          <!-- Only meaningful on an AcroForm: the overlay renderer's output is
+               already static and a .docx is always editable. initRender hides
+               it for both. -->
+          <label class="hidden" data-role="flatten-label">
+            <input type="checkbox" data-role="flatten" />
+            Lock the values so they can't be edited
+          </label>
+          <!-- Appears only after a strict download was refused, and goes again
+               the moment anything changes. Offering it before there is a known
+               problem invites skipping the check; offering it after is the only
+               way past a form the validator is wrong about. -->
+          <button type="button" class="small draft hidden" data-action="download-draft">
+            Download draft anyway
+          </button>
+          <!-- The download is triggered by a synthesized click after an await,
+               which Safari and iOS suppress often enough that it cannot be the
+               only route to the file. -->
+          <a class="hidden" data-role="download" download>If your download didn't start, click here</a>
+        </div>
+
         <div class="awaiting-list"></div>
       </div>
 

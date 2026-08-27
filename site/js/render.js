@@ -1,53 +1,193 @@
-// Validate -> confirm remaining drafts -> render -> download. Strict
-// rendering (api_render.py's default) refuses to export while errors,
-// missing required fields, or unconfirmed agent drafts remain, so this
-// panel's job is mostly making that list visible and actionable.
+// One click: validate, render, download.
+//
+// The old Check -> Render -> Download rail asked a person to run a compliance
+// check they had no reason to care about before they could ask for their
+// document, then handed them a link that any state change silently retracted.
+//
+// The click goes straight to POST /render and never calls /validate. Strict
+// rendering runs the same validate_all and refuses *before* it reads the
+// document (api_render.py, above the get_object), so a refusal costs what the
+// separate round trip cost and a success saves it.
 
-import { state, applyFieldUpdate, onChange } from "./state.js";
+import { state, onChange } from "./state.js";
+
+const COPY = {
+  working: "Preparing your document...",
+  busy: "Preparing...",
+  started: "Your download has started.",
+  draftStarted: "Downloaded as a draft — the problems below are still in it.",
+  dropped: (n) =>
+    `${n} value${n === 1 ? "" : "s"} had nowhere to go on the page and ` +
+    `${n === 1 ? "was" : "were"} left out.`,
+  toFix: (n) => `${n} thing${n === 1 ? "" : "s"} to fix before this can be filed`,
+  confirmFirst: (n) =>
+    `${n} value${n === 1 ? "" : "s"} the assistant drafted still need${n === 1 ? "s" : ""} ` +
+    `your confirmation — use the bar above your answers.`,
+  failed: "Could not produce the document.",
+  expired: "That link expired. Download again.",
+  primary: (docType) => `Download filled ${docType === "docx" ? "Word file" : "PDF"}`,
+  noBox: "no box on the page — place it in the document first",
+};
+
+// Comfortably under the presigned URL's 900s (config.DOWNLOAD_URL_TTL), with
+// room for a slow click.
+const LINK_TTL_MS = 13 * 60 * 1000;
 
 let container, api;
+let busy = false;
+let linkTimer = null;
+// What the visible link's document was rendered from. Null when no link is up.
+let renderedFrom = null;
 
 export function initRender(el, apiClient) {
   container = el;
   api = apiClient;
-  container.querySelector("[data-action=validate]").addEventListener("click", runValidate);
-  container.querySelector("[data-action=render]").addEventListener("click", runRender);
-  onChange(() => {
-    // Field edits can resolve/introduce validation issues; don't force a
-    // manual re-check, but do drop a stale result rather than show it as current.
-    clearSummary();
-  });
+
+  primaryBtn().textContent = COPY.primary(state.session?.doc_type);
+  primaryBtn().addEventListener("click", () => download({ strict: true }));
+  draftBtn().addEventListener("click", () => download({ strict: false }));
+
+  // Only the AcroForm renderer reads `flatten`. The overlay path produces a
+  // flat document either way and _fill_docx ignores it entirely, so on those
+  // two the checkbox is a promise nothing keeps.
+  if (state.session?.doc_type === "pdf_acroform") {
+    container.querySelector("[data-role=flatten-label]").classList.remove("hidden");
+  }
+
+  onChange(onStateChange);
 }
 
-async function runValidate() {
-  setSummary("Checking...");
+const primaryBtn = () => container.querySelector("[data-action=download]");
+const draftBtn = () => container.querySelector("[data-action=download-draft]");
+const fallbackLink = () => container.querySelector("[data-role=download]");
+const problemList = () => container.querySelector(".awaiting-list");
+
+// ------------------------------------------------------------------ the click
+
+async function download({ strict }) {
+  if (busy) return;
+  busy = true;
+  setBusy(true);
+  // A strict attempt is re-asking the question, so the previous answer goes. A
+  // draft attempt is acting on the answer already on screen, so it stays.
+  if (strict) clearProblems();
+  setSummary(COPY.working);
+
   try {
-    const result = await api.validate(state.sid);
-    renderResult(result);
+    const flatten = container.querySelector("[data-role=flatten]").checked;
+    const result = await api.render(state.sid, { strict, flatten });
+    deliver(result, strict);
   } catch (err) {
-    setSummary(err.message || "Validation failed", true);
+    if (err.status === 422 && strict) {
+      showProblems(err.body || {});
+    } else {
+      clearProblems();
+      setSummary(err.body?.message || err.message || COPY.failed, "error");
+    }
+  } finally {
+    busy = false;
+    setBusy(false);
   }
 }
 
-function renderResult(result) {
-  const list = container.querySelector(".awaiting-list");
+function deliver(result, strict) {
+  const name = suggestedName(result.key);
+  startDownload(result.download_url, name);
+  showFallback(result.download_url, name);
+  renderedFrom = fingerprint();
+
+  if (strict) {
+    clearProblems();
+    setSummary(COPY.started, "ok");
+    return;
+  }
+  // A draft render skipped every gate, including the one that stops a value
+  // with no box from being dropped. Say what is missing from the file that just
+  // landed in their downloads folder rather than "Ready."
+  const dropped = (result.unplaced || []).length;
+  setSummary(dropped ? `${COPY.draftStarted} ${COPY.dropped(dropped)}` : COPY.draftStarted, "warn");
+}
+
+// -------------------------------------------------------------- the download
+
+/** Hand the file to the browser without leaving the page.
+ *
+ * `download` is inert here — the URL is cross-origin, so the attribute is
+ * ignored and the filename is whatever api_render signed into the
+ * Content-Disposition. It is set anyway for the day this is served same-origin.
+ * `attachment` in that signature is also the only reason this is a download and
+ * not a navigation away from the session into a PDF viewer.
+ */
+function startDownload(url, name) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.rel = "noopener";
+  a.hidden = true;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/** The visible half, and the only guaranteed half: a click() synthesized after
+ * an await is a gesture the browser did not watch a person make, and Safari and
+ * iOS suppress those. Shipping the programmatic trigger alone strands people
+ * with a rendered document and no way to reach it. */
+function showFallback(url, name) {
+  const link = fallbackLink();
+  link.href = url;
+  link.setAttribute("download", name);
+  link.classList.remove("hidden");
+  clearTimeout(linkTimer);
+  // A dead link that still looks live is worse than none: the failure arrives
+  // as an S3 XML error page with no way back. Re-rendering is cheap and always
+  // current, so the link is retired rather than refreshed.
+  linkTimer = setTimeout(() => {
+    hideFallback();
+    setSummary(COPY.expired);
+  }, LINK_TTL_MS);
+}
+
+function hideFallback() {
+  clearTimeout(linkTimer);
+  linkTimer = null;
+  renderedFrom = null;
+  const link = fallbackLink();
+  link.classList.add("hidden");
+  link.removeAttribute("href");
+}
+
+// -------------------------------------------------------------- the problems
+
+function showProblems(body) {
+  const list = problemList();
   list.innerHTML = "";
 
-  const problems = [...(result.missing_required || []), ...(result.errors || [])];
-  for (const p of problems) {
-    list.appendChild(issueRow(p.label || p.field_id, p.error || "required"));
-  }
-  for (const p of result.awaiting_confirmation || []) {
-    list.appendChild(confirmRow(p.field_id, p.label));
-  }
+  // All three of api_render's 422s carry the whole validate_all result, so one
+  // shape draws all of them. Read defensively anyway: SiteStack deploys ahead
+  // of the SAM backend on a pipeline run, so for a minute this code talks to a
+  // handler that still sends only `awaiting_confirmation`.
+  const missing = body.missing_required || [];
+  const errors = body.errors || [];
+  const unplaced = body.unplaced || [];
+  const awaiting = body.awaiting_confirmation || [];
 
-  const parts = [`${result.filled}/${result.total} filled`];
-  if (result.errors?.length) parts.push(`${result.errors.length} error(s)`);
-  if (result.missing_required?.length) parts.push(`${result.missing_required.length} missing`);
-  if (result.awaiting_confirmation?.length) parts.push(`${result.awaiting_confirmation.length} to confirm`);
-  setSummary(parts.join(" · "), !result.ok);
+  for (const p of missing) list.appendChild(issueRow(p.label || p.field_id, p.error || "required"));
+  for (const p of errors) list.appendChild(issueRow(p.label || p.field_id, p.error || "invalid"));
+  for (const p of unplaced) list.appendChild(issueRow(p.label || p.field_id, COPY.noBox));
 
-  container.querySelector("[data-action=render]").disabled = !result.ok || Boolean(result.awaiting_confirmation?.length);
+  // Confirming drafts belongs to the drafts rail, which is already on screen
+  // whenever there is one to confirm and does the whole batch in one PATCH. The
+  // per-field Confirm buttons that used to live here were the same action
+  // spelled differently, and they deleted themselves: confirming a row notified
+  // state, and the clear below wiped the rows still being worked through.
+  const fixable = missing.length + errors.length + unplaced.length;
+  const parts = [];
+  if (fixable) parts.push(COPY.toFix(fixable));
+  if (awaiting.length) parts.push(COPY.confirmFirst(awaiting.length));
+  setSummary(parts.join(" · ") || body.message || COPY.failed, "error");
+
+  draftBtn().classList.remove("hidden");
 }
 
 function issueRow(label, message) {
@@ -60,67 +200,75 @@ function issueRow(label, message) {
   return row;
 }
 
-function confirmRow(fieldId, label) {
-  const row = document.createElement("div");
-  row.className = "item confirm-row";
-  const text = document.createElement("span");
-  text.setAttribute("dir", "auto");
-  text.textContent = label || fieldId;
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "small";
-  btn.textContent = "Confirm";
-  btn.addEventListener("click", async () => {
-    const version = (state.values[fieldId] || {}).version;
-    try {
-      const res = await api.setFields(state.sid, [{ field_id: fieldId, confirm: true, expected_version: version }]);
-      const result = res.results?.[0];
-      if (result?.ok) {
-        applyFieldUpdate(fieldId, { confirmed: true, version: result.version });
-        row.remove();
-      }
-    } catch {
-      /* leave the row in place for retry */
-    }
-  });
-  row.append(text, btn);
-  return row;
+function clearProblems() {
+  problemList().innerHTML = "";
+  draftBtn().classList.add("hidden");
 }
 
-async function runRender() {
-  const btn = container.querySelector("[data-action=render]");
-  btn.disabled = true;
-  setSummary("Rendering...");
-  try {
-    const flatten = container.querySelector("[data-role=flatten]").checked;
-    const result = await api.render(state.sid, { strict: true, flatten });
-    setSummary("Ready.");
-    const link = container.querySelector("[data-role=download]");
-    link.href = result.download_url;
-    link.classList.remove("hidden");
-  } catch (err) {
-    setSummary(err.body?.message || err.message || "Render failed", true);
-  } finally {
-    btn.disabled = false;
-  }
+// ------------------------------------------------------------------ staleness
+
+/** What survives a state change, and what does not.
+ *
+ * A server problem list stops describing the form the moment a value changes,
+ * and a stale "nothing to fix" is how somebody files an incomplete form — so
+ * that always goes, along with the draft escape hatch that only made sense
+ * beside it.
+ *
+ * The finished download is a different thing. The old panel hid it on every
+ * notify(), which includes selecting a box and switching a tab — neither of
+ * which changes a single byte of the rendered document — and that is why the
+ * link was usually gone before anyone reached it. It is retired only when the
+ * document it points at is genuinely out of date.
+ */
+function onStateChange() {
+  clearProblems();
+  const stale = renderedFrom !== null && fingerprint() !== renderedFrom;
+  if (stale) hideFallback();
+  // The summary is either about the problems just cleared or about a download
+  // that is still good. Only the first kind goes.
+  if (stale || renderedFrom === null) setSummary("");
 }
 
-function setSummary(text, isError = false) {
+/** Everything the export would contain: values, whether each is confirmed, and
+ * the boxes they get stamped into — a moved box changes the overlay renderer's
+ * output as surely as a changed value does. Deliberately not all of `state`:
+ * selection and placing-mode notify too and change nothing about the file. */
+function fingerprint() {
+  return state.fields
+    .map((f) => {
+      const v = state.values[f.field_id] || {};
+      // Joined on separators no field id, value or bbox can contain:
+      // anything they could would let two different forms agree.
+      return [
+        f.field_id,
+        JSON.stringify(v.value ?? null),
+        v.confirmed ? 1 : 0,
+        (f.bbox || []).join(","),
+      ].join("\u0000");
+    })
+    .join("\u0001");
+}
+
+// ------------------------------------------------------------------ chrome
+
+function setBusy(on) {
+  const btn = primaryBtn();
+  btn.disabled = on;
+  // textContent replaces text nodes only, so the ::before icon mask survives.
+  btn.textContent = on ? COPY.busy : COPY.primary(state.session?.doc_type);
+  draftBtn().disabled = on;
+}
+
+function setSummary(text, tone = "muted") {
   const el = container.querySelector(".summary");
   el.textContent = text;
-  el.style.color = isError ? "var(--danger)" : "var(--muted)";
+  el.dataset.tone = tone;
 }
 
-/** Drop a result that no longer describes the form. A check is a snapshot taken
- * server-side; the moment a value changes it stops being true, and leaving it up
- * reads as current — which is worse than showing nothing, because "0 errors"
- * about the previous state is how someone files an incomplete form. The issue
- * list goes with it for the same reason. */
-function clearSummary() {
-  const btn = container.querySelector("[data-action=render]");
-  if (btn) btn.disabled = true;
-  container.querySelector(".awaiting-list").innerHTML = "";
-  const link = container.querySelector("[data-role=download]");
-  if (link) link.classList.add("hidden");
-  setSummary("");
+/** Only the `download` attribute reads this, and a cross-origin URL ignores it.
+ * The name that actually lands is the one api_render signs into the URL. */
+function suggestedName(key) {
+  const ext = (key || "").split(".").pop() || "pdf";
+  const stem = (state.session?.filename || "form").replace(/\.[^.]+$/, "");
+  return `${stem}-filled.${ext}`;
 }

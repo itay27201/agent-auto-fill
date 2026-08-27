@@ -731,12 +731,35 @@ a:hover { text-decoration: underline; }
   align-items: center;
   flex-wrap: wrap;
 }
-.validate-bar .summary { color: var(--muted); font-size: 12px; flex: 1; font-weight: 500; }
-.validate-bar label { font-size: 12px; display: flex; align-items: center; gap: 4px; color: var(--muted); }
+.validate-bar .summary { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; font-weight: 500; }
+.validate-bar .summary[data-tone="ok"]    { color: var(--ok); }
+.validate-bar .summary[data-tone="warn"]  { color: var(--warn); }
+.validate-bar .summary[data-tone="error"] { color: var(--danger); }
+.validate-bar label { font-size: 12px; display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .validate-bar input[type="checkbox"] { width: auto; }
 
-[data-action="validate"]::before,
-[data-action="render"]::before,
+[data-action="download"] { flex-shrink: 0; }
+
+/* Options and escape hatches on their own line under the button, so the one
+   action is never competing for the eye with the two things that qualify it.
+   The row is drawn only when it has something in it — :has keeps that in CSS
+   rather than making three separate hide calls keep a wrapper in sync. */
+.render-secondary { display: none; flex-basis: 100%; align-items: center; gap: 8px; flex-wrap: wrap; }
+.render-secondary:has(> :not(.hidden)) { display: flex; }
+
+/* Draft amber, the same colour the drafts rail uses, so "draft" means one
+   thing everywhere in this column. */
+button.draft {
+  background: var(--draft-bg);
+  border-color: var(--draft-border);
+  color: var(--warn);
+  font-weight: 600;
+}
+button.draft:hover { border-color: var(--warn); }
+
+/* One shared icon block — was keyed to the three buttons that are now one. */
+[data-action="download"]::before,
+[data-action="download-draft"]::before,
 [data-role="download"]::before {
   content: "";
   width: 13px;
@@ -751,33 +774,30 @@ a:hover { text-decoration: underline; }
   -webkit-mask-position: center;
   mask-position: center;
   flex-shrink: 0;
-}
-[data-action="validate"]::before {
-  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M9 12l2 2 4-4'/><circle cx='12' cy='12' r='9'/></svg>");
-  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M9 12l2 2 4-4'/><circle cx='12' cy='12' r='9'/></svg>");
-}
-[data-action="render"]::before {
-  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M7 4l12 8-12 8V4z'/></svg>");
-  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M7 4l12 8-12 8V4z'/></svg>");
-}
-[data-role="download"]::before {
   -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3v12'/><path d='M7 11l5 5 5-5'/><path d='M5 21h14'/></svg>");
   mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3v12'/><path d='M7 11l5 5 5-5'/><path d='M5 21h14'/></svg>");
 }
+/* Demoted from a green pill to a quiet link: it is a fallback for a download
+   that already fired, not a step. */
 [data-role="download"] {
   display: inline-flex;
   align-items: center;
-  font-weight: 600;
-  font-size: 12.5px;
-  background: var(--ok-soft);
-  color: var(--ok);
-  border: 1px solid rgba(21, 128, 61, 0.25);
-  border-radius: var(--radius-sm);
-  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: underline;
 }
-[data-role="download"]:hover { text-decoration: none; filter: brightness(0.97); }
+[data-role="download"]:hover { color: var(--brand); text-decoration: underline; }
 
-.awaiting-list { flex-basis: 100%; padding: 6px 0 0; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+.awaiting-list {
+  flex-basis: 100%;
+  padding: 6px 0 0;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 26vh;
+  overflow-y: auto;
+}
 .awaiting-list .item {
   display: flex;
   justify-content: space-between;
@@ -790,7 +810,6 @@ a:hover { text-decoration: underline; }
 }
 .awaiting-list .item span { min-width: 0; overflow-wrap: anywhere; }
 .awaiting-list .issue-row { border-color: rgba(220, 38, 38, 0.25); background: var(--danger-soft); color: var(--danger); }
-.awaiting-list .confirm-row { border-color: rgba(240, 180, 41, 0.35); background: var(--draft-bg); }
 
 /* Placed explicitly for the same reason as `.side`: the scope chip ships
    `hidden`, and a display:none child leaves grid flow — auto-placement then

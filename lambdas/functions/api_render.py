@@ -12,8 +12,10 @@ Three paths:
 be edited, others require the fillable form intact. Offer both.
 """
 import io
-import json
 import logging
+import re
+import unicodedata
+from urllib.parse import quote
 
 from common import config, schema as sch
 from common.api import ApiError, body_of, caller, handler, path_param
@@ -47,7 +49,11 @@ def lambda_handler(event, _context):
             raise ApiError(
                 "some values were drafted by the assistant and not confirmed",
                 422,
-                awaiting_confirmation=result["awaiting_confirmation"],
+                # The whole result, not just the one list. Every 422 out of this
+                # handler is drawn by the same panel, and a body missing the
+                # counts leaves it printing "undefined" beside a real blocker.
+                # Cheap: it is already computed.
+                **result,
             )
 
     # An uploaded document sits in DocsBucket; a catalog form's master sits in
@@ -76,9 +82,8 @@ def lambda_handler(event, _context):
             "some filled fields have no known box on the page and would be "
             "dropped from the export — place them in the viewer first",
             422,
-            unplaced=[{"field_id": fid,
-                       "label": next((f.label for f in fields if f.field_id == fid), fid)}
-                      for fid in unplaced],
+            **result,
+            unplaced=_unplaced_rows(unplaced, fields),
         )
 
     key = f"outputs/{sid}/filled.{ext}"
@@ -91,11 +96,82 @@ def lambda_handler(event, _context):
     url = s3().generate_presigned_url(
         "get_object",
         Params={"Bucket": config.ARTIFACTS_BUCKET, "Key": key,
-                "ResponseContentDisposition": f'attachment; filename="filled.{ext}"'},
+                "ResponseContentDisposition": _disposition(sess.get("filename"), ext)},
         ExpiresIn=config.DOWNLOAD_URL_TTL,
     )
     return {"download_url": url, "key": key, "flattened": flatten,
-            "summary": result, "unplaced": unplaced}
+            "summary": result, "unplaced": _unplaced_rows(unplaced, fields)}
+
+
+def _unplaced_rows(field_ids: list[str], fields) -> list[dict]:
+    """Ids the renderer could not place, carrying their labels.
+
+    Both the 422 and the 200 go through here so the two answers to "what was
+    left out" have one shape — the strict refusal and the draft download show
+    the same list, and a field id is not something a person filling a form has
+    ever seen. Also retires the per-id linear scan the 422 was doing.
+    """
+    labels = {f.field_id: f.label for f in fields}
+    return [{"field_id": fid, "label": labels.get(fid, fid)} for fid in field_ids]
+
+
+# ------------------------------------------------------------------ filename
+# The name the finished document lands under. It is signed into the presigned
+# URL rather than sent as a header, so it is built here, before signing — there
+# is no adjusting it afterwards without invalidating the signature.
+
+# Anything a filesystem or a header would rather not carry. The name reaching
+# here is either a filename the user typed at upload or a catalog entry's
+# display name, and neither is checked anywhere on the way.
+_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+_KNOWN_EXT = re.compile(r"\.(pdf|docx?|png|jpe?g|tiff?)\Z", re.IGNORECASE)
+
+
+def _stem(raw: str | None) -> str:
+    """The document's name, with no extension and nothing that breaks a path.
+
+    Uploads arrive with a real filename; a catalog session carries the form's
+    display name, which has no extension at all — which is why the strip is
+    conditional on a *known* one rather than "everything after the last dot".
+    That version turns `טופס 101 מהדורה 2.5` into `טופס 101 מהדורה 2`.
+    """
+    name = _UNSAFE.sub(" ", raw or "")
+    name = _KNOWN_EXT.sub("", name.strip())
+    return re.sub(r"\s+", " ", name).strip(" .")[:80] or "form"
+
+
+def _ascii_stem(stem: str) -> str:
+    """A best-effort ASCII spelling of `stem`, or "" when there is none.
+
+    Latin letters survive NFKD with their accents peeled off. Hebrew has no
+    decomposition to ASCII and disappears entirely — which on this product is
+    the ordinary case, not the edge one, and is why the caller has a fallback
+    name standing by. Restricting the survivors to [A-Za-z0-9._-] is also what
+    makes the quoted-string below safe by construction: no quote and no
+    backslash can reach it, so there is nothing to escape.
+    """
+    folded = unicodedata.normalize("NFKD", stem).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", folded).strip("-._")[:60]
+
+
+def _disposition(raw_name: str | None, ext: str) -> str:
+    """The `Content-Disposition` the finished document arrives with.
+
+    Header values are ASCII and these forms are named in Hebrew, so RFC 6266's
+    pair is used: a plain `filename` any client can read, and a `filename*`
+    carrying the real UTF-8 name, which every client since IE9 must prefer.
+
+    `attachment` is also the only reason this is a download at all: the anchor's
+    `download` attribute is inert on a cross-origin URL, so without this the
+    browser navigates away from the session into its own PDF viewer.
+    """
+    stem = _stem(raw_name)
+    fallback = f"{_ascii_stem(stem) or 'form'}-filled.{ext}"
+    # safe="" because RFC 5987's ext-value admits only attr-char unescaped, and
+    # quote's default safe="/" is not one of them. Everything quote never
+    # touches (A-Za-z0-9_.-~) is an attr-char, so this is strictly conforming.
+    encoded = quote(f"{stem}-filled.{ext}", safe="")
+    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{encoded}'
 
 
 # --------------------------------------------------------------- acroform

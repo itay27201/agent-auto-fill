@@ -34,6 +34,9 @@
   --shadow-md: 0 10px 30px rgba(24, 20, 60, 0.09), 0 2px 8px rgba(24, 20, 60, 0.05);
   --shadow-lg: 0 24px 60px rgba(30, 20, 80, 0.16), 0 6px 16px rgba(30, 20, 80, 0.07);
   --gradient-brand: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  /* .app's second column. Named because .resume-fields centres itself against
+     the viewer column, which means subtracting exactly this. */
+  --side-w: 400px;
   font-family: "Inter", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -316,7 +319,7 @@ a:hover { text-decoration: underline; }
 
 .app {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) 400px;
+  grid-template-columns: minmax(320px, 1fr) var(--side-w);
   grid-template-rows: 56px 1fr;
   height: 100vh;
   background: var(--bg);
@@ -331,6 +334,7 @@ a:hover { text-decoration: underline; }
   border-bottom: 1px solid var(--border);
   box-shadow: var(--shadow-xs);
   z-index: 2;
+  position: relative;   /* anchor for the hairline meter under 880px */
 }
 .brand-mark {
   width: 28px;
@@ -346,7 +350,15 @@ a:hover { text-decoration: underline; }
   flex-shrink: 0;
   box-shadow: 0 3px 8px rgba(79, 70, 229, 0.3);
 }
-.topbar .title { font-weight: 700; flex: 1; letter-spacing: -0.01em; }
+.topbar .title {
+  font-weight: 700;
+  flex: 1;
+  letter-spacing: -0.01em;
+  min-width: 0;              /* or a long filename shoves the meter off the bar */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .topbar .progress {
   color: var(--muted);
   font-size: 12px;
@@ -377,6 +389,87 @@ a:hover { text-decoration: underline; }
   padding: 6px 12px;
 }
 .topbar a:hover { border-color: var(--brand); color: var(--brand); text-decoration: none; }
+
+/* ------------------------------------------------ topbar progress meter ==
+   Deliberately not `.topbar .progress` — that pill above is catalog.html's
+   "Step 1 of 3" and keeps its dot. This is session.html's real meter. */
+
+.progress-meter { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+.meter {
+  width: 160px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+  display: flex;
+  box-shadow: inset 0 1px 2px rgba(20, 20, 43, 0.06);
+}
+/* Two segments side by side rather than stacked with position: the counts they
+   draw are disjoint — a value is confirmed or it is a draft, never both — so
+   their widths can never sum past 100%. `flex: none` stops the default shrink
+   from lying about that if a rounding error ever pushes it. */
+.meter-fill { flex: none; width: 0; height: 100%; transition: width 0.35s cubic-bezier(0.22, 1, 0.36, 1); }
+.meter-fill.done  { background: var(--gradient-brand); }
+.meter-fill.draft { background: var(--draft-border); }
+
+.progress-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  max-width: 34ch;             /* "Could not save the box for {label}: ..." */
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.progress-text.flashing { color: var(--brand); }
+
+.topbar-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--panel-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  flex-shrink: 0;
+}
+.topbar-button:hover { border-color: var(--brand); color: var(--brand); }
+/* Same mask technique as [data-action="download"]::before below. */
+.topbar-button::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  mask-position: center;
+  flex-shrink: 0;
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'><path d='M8 6h13'/><path d='M8 12h13'/><path d='M8 18h13'/><path d='M3 6h.01'/><path d='M3 12h.01'/><path d='M3 18h.01'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'><path d='M8 6h13'/><path d='M8 12h13'/><path d='M8 18h13'/><path d='M3 6h.01'/><path d='M3 12h.01'/><path d='M3 18h.01'/></svg>");
+}
+/* Draft amber, the same colour the drafts rail's count uses, so the badge and
+   the rail are visibly counting the same thing. */
+.count-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--draft-border);
+  color: #92400e;
+  font-size: 11px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .viewer-pane {
   overflow: auto;
@@ -572,22 +665,22 @@ a:hover { text-decoration: underline; }
   border-left: 1px solid var(--border);
   background: var(--panel);
   display: grid;
-  /* header · drafts rail · panel · validate · chat. The rail collapses to
-     nothing when it has nothing to say, so the row costs zero until it does.
-     Every child is placed explicitly below: the rail and the guide panel both
-     ship `hidden`, and a display:none child leaves grid flow entirely — under
+  /* header · drafts rail · chat · export bar. The field list is no longer here —
+     it is #fields-modal, opened from the topbar — so the conversation gets the
+     whole remainder instead of splitting it with a 97-row list.
+
+     The rail collapses to nothing when it has nothing to say, so the row costs
+     zero until it does. Every child is placed explicitly below: the rail ships
+     `hidden`, and a display:none child leaves grid flow entirely — under
      auto-placement that shifts every track up and hands the chat pane an
      `auto` row, which collapses it to a sliver. */
-  grid-template-rows: auto auto minmax(0, 1fr) auto minmax(220px, 45vh);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-height: 0;
 }
 .side > .side-header  { grid-row: 1; }
 .side > .drafts-bar   { grid-row: 2; }
-/* Alternates — one tab at a time — so they share the scrolling track. */
-.side > .fields-panel,
-.side > .guide-panel  { grid-row: 3; }
+.side > .chat-pane    { grid-row: 3; }
 .side > .validate-bar { grid-row: 4; }
-.side > .chat-pane    { grid-row: 5; }
 
 /* Fixed rail, never scrolled away with the field list — see session.html. */
 .drafts-bar {
@@ -614,10 +707,14 @@ a:hover { text-decoration: underline; }
 .drafts-bar .overflow-row { background: var(--overflow-soft); }
 .drafts-bar .overflow-row .drafts-count { color: var(--overflow); }
 
+/* A thin header now: everything it used to introduce moved into the dialog, and
+   every pixel it keeps is one the conversation does not get. */
 .side-header {
-  padding: 16px 16px 12px;
+  padding: 11px 14px 10px;
   border-bottom: 1px solid var(--border);
 }
+.side-title { display: flex; align-items: center; gap: 8px; }
+.side-title h2 { flex: 1; }
 .side-header h2 { margin: 0 0 3px; font-size: 14.5px; font-weight: 700; }
 .side-header p { margin: 0; font-size: 12px; color: var(--muted); }
 
@@ -795,7 +892,11 @@ button.draft:hover { border-color: var(--warn); }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 26vh;
+  /* The chat now takes the `1fr` above this bar, so everything this list grows
+     by comes straight out of the conversation. Capped hard, and only the list
+     scrolls — never .validate-bar itself, or the download button that caused
+     these problems could scroll out of reach of the person fixing them. */
+  max-height: min(24vh, 180px);
   overflow-y: auto;
 }
 .awaiting-list .item {
@@ -1014,20 +1115,46 @@ button.draft:hover { border-color: var(--warn); }
 .setup-banner input { margin: 6px 0; }
 
 @media (max-width: 880px) {
-  .app { grid-template-columns: 1fr; grid-template-rows: 56px 26vh minmax(0, 1fr); }
-  /* Placement is inherited from the base rules; only the tracks change here.
-     Stacked, the header and validate rail already cost ~160px, so a fixed
-     chat height can exceed what is left and push itself off the bottom of a
-     short phone. Split the remainder two parts chat to one part fields
-     instead: it cannot overflow, and both keep a usable share at any height. */
+  /* Stacked, there is no side column to subtract — .resume-fields centres on
+     the whole viewport. */
+  :root { --side-w: 0px; }
+  .app { grid-template-columns: 1fr; grid-template-rows: 56px 30vh minmax(0, 1fr); }
+  /* Placement and tracks are both inherited from the base rule now: the field
+     list has left this column, so the header and the export bar are all that
+     stand between the chat and the full remainder. */
   .side {
     border-left: none;
     border-top: 1px solid var(--border);
-    grid-template-rows: auto auto minmax(0, 1fr) auto minmax(130px, 2fr);
   }
   /* Stacked, the chat pane is a fraction of an already short column — a
      desktop-sized composer would fill it and push itself off the bottom. */
   .chat-input textarea { max-height: min(120px, 10vh); }
+
+  /* No room for a 160px pill and its sentence beside a filename and two
+     controls. The meter becomes the hairline along the bottom edge of the
+     topbar — still a real progress bar at the top of the screen — and the
+     sentence goes with it. */
+  .progress-text { display: none; }
+  .meter {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    width: auto;
+    height: 3px;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .topbar-button .topbar-button-label { display: none; }   /* icon + badge only */
+
+  .modal {
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    border-radius: 0;
+    border: 0;
+  }
+  .resume-fields { bottom: 16px; }
 }
 
 /* ============================================================== catalog ==
@@ -1323,6 +1450,96 @@ button.draft:hover { border-color: var(--warn); }
 .side-tab.active { color: var(--brand); background: var(--brand-soft); border-color: transparent; }
 
 .guide-panel { overflow: auto; min-height: 0; padding: 12px; }
+
+/* ============================================================ fields modal ==
+   The form-field list and the guide, lifted out of the right-hand column. They
+   used to share 400px with the chat, which meant you could see the whole of
+   neither. */
+
+.modal {
+  padding: 0;                        /* the UA gives dialogs 1em */
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  width: min(620px, calc(100vw - 40px));
+  height: min(760px, calc(100vh - 96px));
+  max-width: none;                   /* the UA caps at calc(100% - 6px - 2em) */
+  max-height: none;
+  overflow: hidden;
+}
+.modal[open] {
+  display: grid;
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  animation: rise 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Exactly the trap `.side` documents: #guide-panel ships `hidden`, and a
+   display:none child leaves grid flow — under auto-placement the visible panel
+   would land on the `auto` hint row and the hint on the scrolling one. */
+.modal > .modal-head  { grid-row: 1; }
+.modal > .modal-hint  { grid-row: 2; }
+.modal > .fields-panel,
+.modal > .guide-panel { grid-row: 3; padding: 0 14px 14px; }
+
+/* A literal colour on purpose: ::backdrop did not inherit custom properties
+   from the document root before Chrome 122, so var(--...) here resolves to
+   nothing on browsers this still runs on. */
+.modal::backdrop {
+  background: rgba(20, 20, 43, 0.45);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.modal-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 0 16px; }
+.modal-head .side-tabs { margin-bottom: 0; flex: 1; }
+.modal-close {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+  flex-shrink: 0;
+}
+.modal-close:hover { background: var(--brand-soft); border-color: transparent; box-shadow: none; color: var(--brand); }
+.modal-hint { margin: 4px 16px 8px; font-size: 12px; color: var(--muted); }
+
+/* --------------------------------- "the box is placed, want the list back?" */
+/* The dialog takes itself away when someone clicks "Place it", because the drag
+   it is asking for has to land on a document showModal() made inert. This is
+   how it offers itself back — an offer, not a snap-back, because reopening on
+   top of the box you just drew hides the one thing you were trying to see.
+   Centred over the viewer column rather than the viewport, so it does not sit
+   half under the side panel. */
+.resume-fields {
+  position: fixed;
+  z-index: 6;                     /* above .viewer-toolbar's 5 */
+  bottom: 26px;
+  left: 0;
+  right: var(--side-w);
+  margin-inline: auto;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px 9px 14px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  font-size: 12.5px;
+  animation: rise 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.resume-fields .resume-text { font-weight: 600; }
 
 .guide-head {
   padding: 10px 12px;

@@ -22,7 +22,7 @@ const COPY = {
   toFix: (n) => `${n} thing${n === 1 ? "" : "s"} to fix before this can be filed`,
   confirmFirst: (n) =>
     `${n} value${n === 1 ? "" : "s"} the assistant drafted still need${n === 1 ? "s" : ""} ` +
-    `your confirmation — use the bar above your answers.`,
+    `your confirmation — use the drafts bar at the top of this column.`,
   failed: "Could not produce the document.",
   expired: "That link expired. Download again.",
   primary: (docType) => `Download filled ${docType === "docx" ? "Word file" : "PDF"}`,

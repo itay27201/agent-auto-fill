@@ -38,7 +38,33 @@
     <div class="topbar">
       <span class="brand-mark">FA</span>
       <span class="title" id="doc-title">Document</span>
-      <span class="progress" id="progress"></span>
+
+      <!-- This slot used to hold one string, written once at startup ("97
+           fields") and never updated — so the only number the page showed about
+           your progress was the size of the job, never how much of it was done.
+           Brand for values that are yours, draft amber for values the assistant
+           wrote that nobody has confirmed, the rest empty.
+
+           The text is a leaf element on purpose: flashProgress() writes
+           textContent, and writing it on the wrapper would delete the bar. -->
+      <div class="progress-meter" id="progress">
+        <div class="meter" data-role="meter" role="progressbar"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span class="meter-fill done" data-role="meter-done"></span>
+          <span class="meter-fill draft" data-role="meter-draft"></span>
+        </div>
+        <span class="progress-text" data-role="progress-text"></span>
+      </div>
+
+      <!-- The field list is behind this button now, so nothing else on screen
+           would say that four values are sitting in it waiting to be confirmed,
+           or that two fields have no box. The badge is that sentence. -->
+      <button type="button" class="topbar-button" id="open-fields"
+              aria-haspopup="dialog" aria-controls="fields-modal">
+        <span class="topbar-button-label">Form fields</span>
+        <span class="count-badge hidden" data-role="fields-badge"></span>
+      </button>
+
       <a href="./index.html">New document</a>
     </div>
 
@@ -46,28 +72,45 @@
 
     <div class="side">
       <div class="side-header">
-        <div class="side-tabs" role="tablist">
-          <button type="button" class="side-tab active" role="tab" data-side-tab="fields">Form fields</button>
-          <button type="button" class="side-tab hidden" role="tab" data-side-tab="guide">Guide</button>
+        <div class="side-title">
+          <h2>Assistant</h2>
+          <!-- Second door to the same dialog. The topbar button is far from the
+               conversation; this one is where the question gets asked. -->
+          <button type="button" class="small ghost" id="open-fields-side"
+                  aria-haspopup="dialog" aria-controls="fields-modal">Form fields</button>
         </div>
-        <p>Fill directly, or select fields to discuss with the assistant.</p>
+        <p>Ask about this form, or select fields on the page to talk about them.</p>
       </div>
 
       <!-- Everything standing between a filled form and a filed one: unconfirmed
            agent drafts (which strict rendering refuses to export) and values too
-           wide for their box (which the export silently cuts off). A fixed rail,
-           not part of the scrolling field list, because on a 97-field form the
-           list is exactly where these get lost. -->
+           wide for their box (which the export silently cuts off). It stays in
+           this column rather than moving into the dialog, because both of its
+           actions — "Review one by one" and "Show me" — scroll the *document*,
+           and the document is inert while the dialog is open. -->
       <div class="drafts-bar hidden" id="drafts-bar"></div>
 
-      <div class="fields-panel" id="fields-panel" data-side-panel="fields"></div>
-      <div class="guide-panel hidden" id="guide-panel" data-side-panel="guide"></div>
+      <div class="chat-pane">
+        <div class="chat-scope hidden" id="chat-scope"></div>
+        <div class="chat-log" id="chat-log"></div>
+        <div class="chat-input">
+          <span class="voice-status" id="voice-status" role="status" aria-live="polite"></span>
+          <textarea id="chat-input" placeholder="Ask the assistant about this form..." dir="auto"></textarea>
+          <!-- Both voice buttons ship hidden and are revealed by their own module
+               only once it has confirmed the browser can actually do the job. -->
+          <button type="button" class="hidden" id="chat-speak" title="Read replies aloud" aria-label="Read replies aloud" aria-pressed="false"></button>
+          <button type="button" class="hidden" id="chat-mic" title="Dictate a message" aria-label="Dictate a message" data-state="idle"></button>
+          <button type="button" class="primary" id="chat-send" title="Send" aria-label="Send"></button>
+        </div>
+      </div>
 
       <!-- One button. Validation, rendering and the download are one action
            because they were never three decisions — nobody wants a compliance
            check, they want their document, and the check is what the server
            does on the way. Problems come back from the same click and land
-           below, where the button that caused them is. -->
+           below, where the button that caused them is. Last in the column: it
+           is the end of the job, and the composer above it is where the work
+           happens. -->
       <div class="validate-bar" id="render-panel">
         <span class="summary" role="status" aria-live="polite"></span>
         <button type="button" class="primary" data-action="download">Download filled PDF</button>
@@ -95,22 +138,42 @@
 
         <div class="awaiting-list"></div>
       </div>
-
-      <div class="chat-pane">
-        <div class="chat-scope hidden" id="chat-scope"></div>
-        <div class="chat-log" id="chat-log"></div>
-        <div class="chat-input">
-          <span class="voice-status" id="voice-status" role="status" aria-live="polite"></span>
-          <textarea id="chat-input" placeholder="Ask the assistant about this form..." dir="auto"></textarea>
-          <!-- Both voice buttons ship hidden and are revealed by their own module
-               only once it has confirmed the browser can actually do the job. -->
-          <button type="button" class="hidden" id="chat-speak" title="Read replies aloud" aria-label="Read replies aloud" aria-pressed="false"></button>
-          <button type="button" class="hidden" id="chat-mic" title="Dictate a message" aria-label="Dictate a message" data-state="idle"></button>
-          <button type="button" class="primary" id="chat-send" title="Send" aria-label="Send"></button>
-        </div>
-      </div>
     </div>
   </div>
+
+  <!-- Body-level, not inside #app, for one hard reason: #app ships `hidden` and
+       showFatal() puts it back, `.hidden` is display:none !important, and
+       showModal() on a dialog under a display:none ancestor paints nothing.
+
+       Native <dialog>: Esc, the focus trap and focus restore are the platform's,
+       and showModal() promotes this into the top layer — above .viewer-toolbar's
+       z-index:5 without joining that bidding war.
+
+       Never put `.hidden` on this element. That rule is !important and would beat
+       `.modal[open] { display: grid }`. Open and close it with showModal()/close(). -->
+  <dialog class="modal" id="fields-modal" aria-label="Form fields and guidance">
+    <div class="modal-head">
+      <div class="side-tabs" role="tablist">
+        <button type="button" class="side-tab active" role="tab" id="tab-fields"
+                aria-selected="true" aria-controls="fields-panel"
+                data-side-tab="fields">Form fields</button>
+        <button type="button" class="side-tab hidden" role="tab" id="tab-guide"
+                aria-selected="false" aria-controls="guide-panel"
+                data-side-tab="guide">Guide</button>
+      </div>
+      <button type="button" class="modal-close" data-action="close-fields"
+              aria-label="Close">&times;</button>
+    </div>
+
+    <p class="modal-hint">Fill directly, or select fields to discuss with the assistant.</p>
+
+    <!-- tabindex on both: they are the dialog's scroll containers, and without a
+         tab stop a keyboard user cannot scroll a long list at all. -->
+    <div class="fields-panel" id="fields-panel" data-side-panel="fields"
+         role="tabpanel" aria-labelledby="tab-fields" tabindex="0"></div>
+    <div class="guide-panel hidden" id="guide-panel" data-side-panel="guide"
+         role="tabpanel" aria-labelledby="tab-guide" tabindex="0"></div>
+  </dialog>
 
   <script type="module" src="./js/session.js"></script>
 </body>

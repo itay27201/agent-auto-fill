@@ -11,6 +11,7 @@
 
 import { state, onChange } from "./state.js";
 import { renderMarkdown, escapeHtml } from "./md.js";
+import { showSideTab } from "./fields-modal.js";
 
 // Order the reader cares about, not the storage order: whether this applies to
 // them, then what they need in hand, before the rest.
@@ -77,14 +78,20 @@ function render(root, guide) {
       .join("");
     const el = section("Notes on individual fields", list);
     // Clicking a note jumps to that field's row, which is the reason to read
-    // the note in the first place.
+    // the note in the first place. The row lives in the fields tab — which is by
+    // definition not the tab being read right now — so the switch has to come
+    // first: scrollIntoView on a display:none row does nothing at all, which is
+    // why this never actually worked. One frame for the panel to get layout.
     el.addEventListener("click", (ev) => {
       const wrap = ev.target.closest(".guide-note");
       if (!wrap || !ev.target.closest(".guide-note-label")) return;
-      const row = document.querySelector(`.field-row[data-field-id="${cssEscape(wrap.dataset.field)}"]`);
-      row?.scrollIntoView({ behavior: "smooth", block: "center" });
-      row?.classList.add("flash");
-      setTimeout(() => row?.classList.remove("flash"), 1200);
+      showSideTab("fields");
+      requestAnimationFrame(() => {
+        const row = document.querySelector(`.field-row[data-field-id="${cssEscape(wrap.dataset.field)}"]`);
+        row?.scrollIntoView({ behavior: "smooth", block: "center" });
+        row?.classList.add("flash");
+        setTimeout(() => row?.classList.remove("flash"), 1200);
+      });
     });
     root.appendChild(el);
   }

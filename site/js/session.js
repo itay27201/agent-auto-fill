@@ -8,6 +8,8 @@ import { initDraftsBar, setOverflowing } from "./drafts-bar.js";
 import { initChat, wsHandlers } from "./chat.js";
 import { initRender } from "./render.js";
 import { initGuidePanel } from "./guide-panel.js";
+import { initFieldsModal, close as closeFieldsModal } from "./fields-modal.js";
+import { initProgressMeter, setProgressText, flashProgress } from "./progress-meter.js";
 
 const POLL_START_MS = 1500;
 const POLL_MAX_MS = 5000;
@@ -20,7 +22,6 @@ const MAX_CONSECUTIVE_ERRORS = 4;
 
 const sid = new URLSearchParams(window.location.search).get("sid");
 const titleEl = document.getElementById("doc-title");
-const progressEl = document.getElementById("progress");
 const appEl = document.getElementById("app");
 const errorEl = document.getElementById("session-error");
 const loadingEl = document.getElementById("session-loading");
@@ -28,6 +29,11 @@ const loadingDecorEl = document.getElementById("loading-decor");
 const loadingTitleEl = document.getElementById("loading-title");
 const loadingNoteEl = document.getElementById("loading-note");
 const loadingBackEl = document.getElementById("loading-back");
+
+// Before boot(), because pollUntilReady writes to the text slot long before
+// startApp exists. With no fields in the store the meter hides its bar and
+// leaves the text to say what the pipeline is doing.
+initProgressMeter(document.getElementById("progress"));
 
 if (!sid) {
   showFatal("No session id in the URL. Start from the upload page.");
@@ -76,7 +82,7 @@ async function pollUntilReady(api, sessionId) {
     titleEl.textContent = session.filename || "Document";
     if (session.filename) loadingTitleEl.textContent = `Reading ${session.filename}`;
     const progress = describeProgress(session);
-    setProgress(progress);
+    setProgressText(progress);
     setLoadingStatus(progress);
 
     if (session.status === "ready" || session.status === "failed") return session;
@@ -98,7 +104,8 @@ function startApp(api, cfg, session) {
   setSession(session);
   hideLoading();
   appEl.classList.remove("hidden");
-  setProgress(`${session.field_count ?? state.fields.length} fields`);
+  // No setProgress here: setSession() above already notified, so the meter has
+  // drawn itself from the real values rather than quoting the form's size.
 
   initViewer(document.getElementById("viewer-pane"), api, onBoxPlaced, setOverflowing);
   initFieldsPanel(document.getElementById("fields-panel"), api, onNeedsRefetch);
@@ -110,7 +117,14 @@ function startApp(api, cfg, session) {
     document.getElementById("guide-panel"),
     document.querySelector('[data-side-tab="guide"]')
   );
-  initSideTabs();
+  initFieldsModal({
+    dialogEl: document.getElementById("fields-modal"),
+    buttons: [
+      document.getElementById("open-fields"),
+      document.getElementById("open-fields-side"),
+    ],
+    badge: document.querySelector("[data-role=fields-badge]"),
+  });
 
   const ws = createWsClient(cfg.wsUrl, wsHandlers());
   initChat(
@@ -156,40 +170,6 @@ function startApp(api, cfg, session) {
   }
 }
 
-function initSideTabs() {
-  const tabs = Array.from(document.querySelectorAll("[data-side-tab]"));
-  const panels = new Map(
-    Array.from(document.querySelectorAll("[data-side-panel]")).map((el) => [el.dataset.sidePanel, el])
-  );
-  for (const tab of tabs) {
-    tab.addEventListener("click", () => {
-      for (const t of tabs) t.classList.toggle("active", t === tab);
-      for (const [key, panel] of panels) panel.classList.toggle("hidden", key !== tab.dataset.sideTab);
-    });
-  }
-}
-
-// What the progress slot says when nothing transient is being flashed over it.
-// Held separately because two overlapping flashes used to have the second
-// capture the first's message as the thing to restore — so the transient text
-// became permanent and the real progress never came back.
-let progressBaseline = "";
-let flashTimer = null;
-
-function setProgress(text) {
-  progressBaseline = text;
-  if (!flashTimer) progressEl.textContent = text;
-}
-
-function flashProgress(message, holdMs = 4000) {
-  progressEl.textContent = message;
-  clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => {
-    flashTimer = null;
-    progressEl.textContent = progressBaseline;
-  }, holdMs);
-}
-
 function setLoadingStatus(text) {
   if (loadingEl.classList.contains("hidden")) return;
   errorEl.textContent = text;
@@ -201,6 +181,9 @@ function hideLoading() {
 }
 
 function showFatal(message) {
+  // Otherwise a session that dies while the list is open leaves a dialog
+  // floating over the "Something went wrong" card, with nothing behind it.
+  closeFieldsModal();
   appEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
   loadingDecorEl.classList.remove("hidden");
